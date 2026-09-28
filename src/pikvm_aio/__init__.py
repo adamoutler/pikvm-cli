@@ -25,7 +25,9 @@ from .models import (
 )
 from .tls import create_ssl_context, fetch_remote_cert, parse_host_port
 
-__version__ = "0.1.0"
+async_fetch_peer_certificate = fetch_remote_cert
+
+__version__ = "0.1.1"
 
 __all__ = [
     "HardwareHealth",
@@ -46,6 +48,7 @@ __all__ = [
     "ServerMeta",
     "ThrottlingInfo",
     "__version__",
+    "async_fetch_peer_certificate",
     "create_ssl_context",
     "fetch_remote_cert",
     "format_url",
