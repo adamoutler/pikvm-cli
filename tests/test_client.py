@@ -108,6 +108,17 @@ def test_client_auth_header() -> None:
     assert totp_decoded.startswith("admin:password123")
     assert len(totp_decoded) == len("admin:password123") + 6
 
+    # With static 6-digit OTP
+    client_static_otp = PiKVMClient(
+        "pikvm.local",
+        username="admin",
+        password="password123",
+        totp_secret="123456",
+    )
+    static_header = client_static_otp._get_auth_header()
+    static_decoded = base64.b64decode(static_header.split(" ")[1]).decode("utf-8")
+    assert static_decoded == "admin:password123123456"
+
 
 @pytest.mark.asyncio
 async def test_get_info_success(sample_info_payload: dict, sample_msd_payload: dict) -> None:

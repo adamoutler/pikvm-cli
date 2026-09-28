@@ -75,16 +75,21 @@ class PiKVMClient:
         self.base_url = format_url(host)
         self.username = username
         self.password = password
-        self.totp_secret = totp_secret.strip() if totp_secret else None
+        self.totp_secret = totp_secret.strip().replace(" ", "") if totp_secret else None
         self._totp: pyotp.TOTP | None = None
+        self._static_totp: str | None = None
 
         if self.totp_secret:
-            try:
-                self._totp = pyotp.TOTP(self.totp_secret)
-                # Verify that it generates a token without error
-                self._totp.now()
-            except (binascii.Error, ValueError) as err:
-                raise PiKVMAuthenticationError(f"Invalid TOTP base32 secret: {err}") from err
+            # Support either a static numeric OTP code (6 or 8 digits) or a base32 seed secret
+            if len(self.totp_secret) in (6, 8) and self.totp_secret.isdigit():
+                self._static_totp = self.totp_secret
+            else:
+                try:
+                    self._totp = pyotp.TOTP(self.totp_secret)
+                    # Verify that it generates a token without error
+                    self._totp.now()
+                except (binascii.Error, ValueError) as err:
+                    raise PiKVMAuthenticationError(f"Invalid TOTP base32 secret: {err}") from err
 
         self.timeout = timeout
         self.verify_ssl = verify_ssl
@@ -104,6 +109,8 @@ class PiKVMClient:
         auth_pass = self.password
         if self._totp:
             auth_pass = f"{self.password}{self._totp.now()}"
+        elif self._static_totp:
+            auth_pass = f"{self.password}{self._static_totp}"
 
         credentials = f"{self.username}:{auth_pass}"
         encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
