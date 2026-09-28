@@ -78,6 +78,12 @@ jobs:
           python -m build
           twine check dist/*
 
+      - name: Publish to Forgejo Package Registry
+        run: |
+          twine upload --repository-url "https://git.adamoutler.com/api/packages/${GITHUB_REPOSITORY_OWNER:-aoutler}/pypi" -u "${GITHUB_ACTOR}" -p "${GITHUB_TOKEN}" dist/* || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   publish-pypi:
     name: Publish to PyPI
     needs: test
