@@ -117,3 +117,7 @@ def test_device_info_combined(sample_info_payload: dict, sample_msd_payload: dic
     assert device.kvmd_version == "3.240-1"
     assert device.extras.get("vnc") == {"is_running": True}
     assert device.msd.is_enabled is True
+    assert device["hw"]["platform"]["model"] == "v3-hdmi"
+    assert device.get("hw") is not None
+    assert "hw" in device
+    assert "nonexistent" not in device

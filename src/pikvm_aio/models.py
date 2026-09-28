@@ -293,6 +293,15 @@ class PiKVMDeviceInfo:
     def is_throttled(self) -> bool:
         return self.hw.health.throttling.is_throttled
 
+    def __getitem__(self, key: str) -> Any:
+        return self.raw[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.raw.get(key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.raw
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PiKVMDeviceInfo:
         meta = data.get("meta", {})
