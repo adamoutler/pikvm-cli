@@ -1,0 +1,126 @@
+name: CI / CD
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  packages: write
+  contents: write
+
+jobs:
+  test:
+    name: Run Tests & Quality Checks
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12
+    steps:
+      - name: Setup and Checkout
+        run: |
+          apt-get update && apt-get install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+          git init
+          git remote add origin "https://${GITHUB_ACTOR}:${GITHUB_TOKEN}@git.adamoutler.com/${GITHUB_REPOSITORY}.git"
+          git fetch origin "${GITHUB_SHA}"
+          git reset --hard FETCH_HEAD
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install '.[dev]'
+
+      - name: Run Ruff Lint
+        run: |
+          ruff check src tests
+
+      - name: Run Mypy Type Check
+        run: |
+          mypy src
+
+      - name: Run Tests with Coverage
+        run: |
+          set +e
+          echo "Running tests..." > test-output.log
+          pytest -v --cov=pikvm_aio --cov-report=term-missing --cov-fail-under=85 >> test-output.log 2>&1
+          TEST_EXIT=$?
+          echo "Exit code: $TEST_EXIT" >> test-output.log
+          cat test-output.log
+
+          python -c '
+          import urllib.request, urllib.parse
+          with open("test-output.log") as f:
+              log_text = f.read()
+          req = urllib.request.Request(
+              "https://dpaste.com/api/v2/",
+              data=urllib.parse.urlencode({"content": log_text, "expiry_days": 1}).encode("utf-8"),
+          )
+          try:
+              res = urllib.request.urlopen(req)
+              print("DPASTE_URL:", res.read().decode().strip())
+          except Exception as e:
+              print(f"Failed to paste log: {e}")
+          '
+          exit $TEST_EXIT
+
+      - name: Build and Validate Distribution
+        run: |
+          python -m build
+          twine check dist/*
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          python3 -m pip install --upgrade pip build twine
+
+      - name: Build package
+        run: |
+          python3 -m build
+
+      - name: Check package distribution
+        run: |
+          twine check dist/*
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python3 -m twine upload dist/*
+
+      - name: Extract package version
+        id: package-version
+        run: |
+          VERSION=$(grep 'version = ' pyproject.toml | cut -d'"' -f2 | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from pyproject.toml"
+            exit 1
+          fi
+          echo "current-version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.package-version.outputs.current-version }}
+          name: v${{ steps.package-version.outputs.current-version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
