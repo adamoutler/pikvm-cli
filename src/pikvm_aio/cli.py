@@ -103,6 +103,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional file path to save certificate PEM to",
     )
 
+    # Subcommand: collect
+    collect_parser = subparsers.add_parser(
+        "collect",
+        help="Collect all diagnostic and operational data from the PiKVM device",
+    )
+    collect_parser.add_argument(
+        "-o",
+        "--output",
+        help="Optional file path to save full diagnostic JSON report to",
+    )
+
     return parser
 
 
@@ -226,6 +237,51 @@ async def async_main(args: argparse.Namespace) -> int:
                     status = "succeeded" if success else "failed"
                     print(f"ATX power action '{action}' {status}.")
                 return 0 if success else 1
+
+            elif args.command == "collect":
+                info = await client.get_info()
+                msd = await client.get_msd()
+                diag = await client.get_all_diagnostics()
+                output = {
+                    "Device": {
+                        "Name": info.name,
+                        "Model": info.model,
+                        "Serial": info.serial,
+                        "KVMD Version": info.kvmd_version,
+                    },
+                    "Performance": {
+                        "CPU Temperature": f"{info.cpu_temp} °C" if info.cpu_temp else "N/A",
+                        "CPU Utilization": f"{info.cpu_utilization} %"
+                        if info.cpu_utilization
+                        else "N/A",
+                        "Memory Utilization": f"{info.memory_utilization} %"
+                        if info.memory_utilization
+                        else "N/A",
+                        "Fan Speed": f"{info.fan_speed} RPM" if info.fan_speed else "N/A",
+                        "Throttled": info.is_throttled,
+                    },
+                    "MSD": {
+                        "Enabled": msd.is_enabled,
+                        "Drive Mounted": msd.drive.is_mounted,
+                        "Total Storage (MB)": msd.storage.total_mb,
+                        "Free Storage (MB)": msd.storage.free_mb,
+                        "Used Storage (MB)": msd.storage.used_mb,
+                        "Percent Used": f"{msd.storage.percent_used} %"
+                        if msd.storage.percent_used
+                        else "N/A",
+                        "Images": msd.storage.images,
+                    },
+                    "ATX": diag.get("atx", {}),
+                    "GPIO": diag.get("gpio", {}),
+                    "HID": diag.get("hid", {}),
+                    "Streamer": diag.get("streamer", {}),
+                }
+                if getattr(args, "output", None):
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        json.dump(output, f, indent=2)
+                    if not args.json:
+                        print(f"Saved diagnostic report to {args.output}")
+                _print_formatted(output, args.json)
 
         return 0
 

@@ -1,8 +1,14 @@
-"""Pytest fixtures for pikvm-aio test suite."""
-
 from __future__ import annotations
 
 import pytest
+
+# Pre-initialize pycares Channel daemon thread to avoid verify_cleanup thread check failure
+try:
+    import pycares
+
+    _channel = pycares.Channel()
+except Exception:
+    pass
 
 
 @pytest.fixture

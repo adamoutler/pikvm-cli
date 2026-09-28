@@ -127,21 +127,29 @@ class HardwarePerformance:
     def from_dict(cls, data: dict[str, Any] | None) -> HardwarePerformance:
         data = data or {}
         cpu = data.get("cpu", {})
-        mem = data.get("memory", {})
+        mem = data.get("memory", data.get("mem", {}))
         fan = data.get("fan", {})
 
-        cpu_util = cpu.get("utilization") if isinstance(cpu, dict) else None
-        mem_util = mem.get("utilization") if isinstance(mem, dict) else None
+        cpu_util = cpu.get("utilization", cpu.get("percent")) if isinstance(cpu, dict) else None
+        mem_util = mem.get("utilization", mem.get("percent")) if isinstance(mem, dict) else None
         mem_tot = mem.get("total") if isinstance(mem, dict) else None
         mem_avail = mem.get("available") if isinstance(mem, dict) else None
-        fan_speed = fan.get("speed") if isinstance(fan, dict) else None
+
+        fan_speed: Any = None
+        if isinstance(fan, dict):
+            if "speed" in fan:
+                fan_speed = fan.get("speed")
+            elif "state" in fan and isinstance(fan["state"], dict):
+                inner_fan = fan["state"].get("fan", {})
+                if isinstance(inner_fan, dict):
+                    fan_speed = inner_fan.get("speed")
 
         return cls(
             cpu_utilization=float(cpu_util) if cpu_util is not None else None,
             memory_utilization=float(mem_util) if mem_util is not None else None,
             memory_total_bytes=int(mem_tot) if mem_tot is not None else None,
             memory_available_bytes=int(mem_avail) if mem_avail is not None else None,
-            fan_speed=int(fan_speed) if fan_speed is not None else None,
+            fan_speed=round(float(fan_speed)) if fan_speed is not None else None,
         )
 
 
@@ -154,12 +162,35 @@ class HardwareInfo:
     performance: HardwarePerformance = field(default_factory=HardwarePerformance)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> HardwareInfo:
+    def from_dict(
+        cls,
+        data: dict[str, Any] | None,
+        root_data: dict[str, Any] | None = None,
+    ) -> HardwareInfo:
         data = data or {}
+        root = root_data or {}
+        platform = PlatformInfo.from_dict(data.get("platform"))
+        health = HardwareHealth.from_dict(data.get("health"))
+
+        perf_data = data.get("performance")
+        if not perf_data:
+            perf_dict: dict[str, Any] = {}
+            health_dict = data.get("health", {})
+            if isinstance(health_dict, dict):
+                if "cpu" in health_dict:
+                    perf_dict["cpu"] = health_dict["cpu"]
+                if "mem" in health_dict:
+                    perf_dict["memory"] = health_dict["mem"]
+            fan_dict = root.get("fan", data.get("fan", {}))
+            if fan_dict:
+                perf_dict["fan"] = fan_dict
+            perf_data = perf_dict
+
+        performance = HardwarePerformance.from_dict(perf_data)
         return cls(
-            platform=PlatformInfo.from_dict(data.get("platform")),
-            health=HardwareHealth.from_dict(data.get("health")),
-            performance=HardwarePerformance.from_dict(data.get("performance")),
+            platform=platform,
+            health=health,
+            performance=performance,
         )
 
 
@@ -215,6 +246,26 @@ class MsdStorage:
         data = data or {}
         avail = data.get("available")
         tot = data.get("total")
+
+        parts = data.get("parts")
+        if isinstance(parts, dict):
+            if avail is None:
+                avail_sum = sum(
+                    int(p.get("free", 0))
+                    for p in parts.values()
+                    if isinstance(p, dict) and "free" in p
+                )
+                if avail_sum > 0 or parts:
+                    avail = avail_sum
+            if tot is None:
+                tot_sum = sum(
+                    int(p.get("size", 0))
+                    for p in parts.values()
+                    if isinstance(p, dict) and "size" in p
+                )
+                if tot_sum > 0 or parts:
+                    tot = tot_sum
+
         raw_images = data.get("images", {})
         images_dict: dict[str, int] = {}
         if isinstance(raw_images, dict):
@@ -310,11 +361,36 @@ class PiKVMDeviceInfo:
         kvmd_dict = system_dict.get("kvmd") if isinstance(system_dict, dict) else None
         kvmd_ver = kvmd_dict.get("version") if isinstance(kvmd_dict, dict) else None
 
+        hw_info = HardwareInfo.from_dict(data.get("hw"), root_data=data)
+        msd_info = MsdInfo.from_dict(data.get("msd"))
+
+        raw_copy = dict(data)
+        hw_raw = dict(raw_copy.get("hw", {}) or {})
+        if "performance" not in hw_raw and hw_info.performance:
+            hw_raw["performance"] = {
+                "cpu": {"utilization": hw_info.performance.cpu_utilization},
+                "memory": {
+                    "utilization": hw_info.performance.memory_utilization,
+                    "total": hw_info.performance.memory_total_bytes,
+                    "available": hw_info.performance.memory_available_bytes,
+                },
+                "fan": {"speed": hw_info.performance.fan_speed},
+            }
+            raw_copy["hw"] = hw_raw
+
+        msd_raw = dict(raw_copy.get("msd", {}) or {})
+        storage_raw = dict(msd_raw.get("storage", {}) or {})
+        if msd_info.storage.total_bytes is not None and "total" not in storage_raw:
+            storage_raw["total"] = msd_info.storage.total_bytes
+            storage_raw["available"] = msd_info.storage.available_bytes
+            msd_raw["storage"] = storage_raw
+            raw_copy["msd"] = msd_raw
+
         return cls(
             server=ServerMeta.from_dict(server_dict),
-            hw=HardwareInfo.from_dict(data.get("hw")),
-            msd=MsdInfo.from_dict(data.get("msd")),
+            hw=hw_info,
+            msd=msd_info,
             extras=dict(data.get("extras", {}) or {}),
             kvmd_version=str(kvmd_ver) if kvmd_ver is not None else None,
-            raw=data,
+            raw=raw_copy,
         )

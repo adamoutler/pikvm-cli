@@ -7,6 +7,7 @@ import binascii
 import logging
 from types import TracebackType
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import aiohttp
 import pyotp
@@ -24,11 +25,15 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def format_url(url: str) -> str:
-    """Format and normalize a host or URL string."""
+    """Format and normalize a host or URL string, stripping embedded credentials."""
     clean = url.strip()
     if not clean.startswith("http://") and not clean.startswith("https://"):
         clean = f"https://{clean}"
-    return clean.rstrip("/")
+    parsed = urlparse(clean)
+    netloc = parsed.hostname or "localhost"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return f"{parsed.scheme}://{netloc}".rstrip("/")
 
 
 class PiKVMClient:
@@ -60,6 +65,13 @@ class PiKVMClient:
             timeout: Request timeout in seconds.
 
         """
+        raw_host = host.strip()
+        parsed_url = urlparse(raw_host if "://" in raw_host else f"https://{raw_host}")
+        if parsed_url.username and (username == "admin" or not username):
+            username = unquote(parsed_url.username)
+        if parsed_url.password and (password == "admin" or not password):
+            password = unquote(parsed_url.password)
+
         self.base_url = format_url(host)
         self.username = username
         self.password = password
@@ -194,6 +206,59 @@ class PiKVMClient:
         """Fetch Mass Storage Device (MSD) status."""
         msd_dict = await self.get_raw_msd()
         return MsdInfo.from_dict(msd_dict)
+
+    async def get_raw_atx(self) -> dict[str, Any]:
+        """Fetch raw /api/atx status dictionary."""
+        try:
+            return await self._request("GET", "/api/atx")
+        except (PiKVMDeviceError, PiKVMConnectionError) as err:
+            _LOGGER.debug("ATX endpoint returned error or not supported: %s", err)
+            return {}
+
+    async def get_raw_gpio(self) -> dict[str, Any]:
+        """Fetch raw /api/gpio dictionary."""
+        try:
+            return await self._request("GET", "/api/gpio")
+        except (PiKVMDeviceError, PiKVMConnectionError) as err:
+            _LOGGER.debug("GPIO endpoint returned error or not supported: %s", err)
+            return {}
+
+    async def get_raw_hid(self) -> dict[str, Any]:
+        """Fetch raw /api/hid dictionary."""
+        try:
+            return await self._request("GET", "/api/hid")
+        except (PiKVMDeviceError, PiKVMConnectionError) as err:
+            _LOGGER.debug("HID endpoint returned error or not supported: %s", err)
+            return {}
+
+    async def get_raw_streamer(self) -> dict[str, Any]:
+        """Fetch raw /api/streamer dictionary."""
+        try:
+            return await self._request("GET", "/api/streamer")
+        except (PiKVMDeviceError, PiKVMConnectionError) as err:
+            _LOGGER.debug("Streamer endpoint returned error or not supported: %s", err)
+            return {}
+
+    async def get_raw_auth_check(self) -> dict[str, Any]:
+        """Verify authentication via /api/auth/check."""
+        return await self._request("GET", "/api/auth/check")
+
+    async def get_all_diagnostics(self) -> dict[str, Any]:
+        """Fetch consolidated diagnostics from all standard KVMD endpoints."""
+        info = await self.get_raw_info()
+        msd = await self.get_raw_msd()
+        atx = await self.get_raw_atx()
+        gpio = await self.get_raw_gpio()
+        hid = await self.get_raw_hid()
+        streamer = await self.get_raw_streamer()
+        return {
+            "info": info,
+            "msd": msd,
+            "atx": atx,
+            "gpio": gpio,
+            "hid": hid,
+            "streamer": streamer,
+        }
 
     async def power_action(self, action: str) -> bool:
         """Send an ATX power command (e.g. 'click', 'long', 'reset', 'off')."""

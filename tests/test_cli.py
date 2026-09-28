@@ -9,7 +9,7 @@ import pytest
 
 from pikvm_aio.cli import async_main, build_parser
 from pikvm_aio.exceptions import PiKVMAuthenticationError
-from pikvm_aio.models import PiKVMDeviceInfo
+from pikvm_aio.models import MsdInfo, PiKVMDeviceInfo
 
 
 def test_cli_parser_defaults() -> None:
@@ -131,3 +131,41 @@ async def test_cli_auth_error(capsys: pytest.CaptureFixture) -> None:
         assert code == 1
         captured = capsys.readouterr()
         assert "PiKVM Error: Invalid credentials" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_cli_collect(
+    capsys: pytest.CaptureFixture, sample_info_payload: dict, sample_msd_payload: dict
+) -> None:
+    """Test collect command."""
+    parser = build_parser()
+    args = parser.parse_args(["-H", "pikvm.local", "collect"])
+
+    combined = dict(sample_info_payload["result"])
+    combined["msd"] = sample_msd_payload["result"]
+    mock_dev_info = PiKVMDeviceInfo.from_dict(combined)
+    mock_msd_info = MsdInfo.from_dict(sample_msd_payload["result"])
+    mock_diag = {
+        "info": combined,
+        "msd": sample_msd_payload["result"],
+        "atx": {"enabled": True},
+        "gpio": {},
+        "hid": {},
+        "streamer": {},
+    }
+
+    with (
+        patch("pikvm_aio.client.PiKVMClient.get_info", new=AsyncMock(return_value=mock_dev_info)),
+        patch("pikvm_aio.client.PiKVMClient.get_msd", new=AsyncMock(return_value=mock_msd_info)),
+        patch(
+            "pikvm_aio.client.PiKVMClient.get_all_diagnostics",
+            new=AsyncMock(return_value=mock_diag),
+        ),
+    ):
+        code = await async_main(args)
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "Device:" in captured.out
+        assert "Performance:" in captured.out
+        assert "MSD:" in captured.out
+        assert "ATX:" in captured.out
