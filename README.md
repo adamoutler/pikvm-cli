@@ -58,6 +58,7 @@ pip install pikvm-aio
 import asyncio
 from pikvm_aio import PiKVMClient
 
+
 async def main():
     async with PiKVMClient(
         host="https://pikvm.local",
@@ -65,8 +66,8 @@ async def main():
         password="secret_password",
         totp_secret="JBSWY3DPEHPK3PXP",  # Optional RFC 6238 base32 secret
         verify_ssl=True,
-        ssl_cert=None,                   # Optional in-memory PEM string or bytes
-        check_hostname=True,             # Set False for IP / .local self-signed certs
+        ssl_cert=None,  # Optional in-memory PEM string or bytes
+        check_hostname=True,  # Set False for IP / .local self-signed certs
         timeout=10.0,
     ) as client:
         # Fetch consolidated device snapshot (info + msd)
@@ -92,6 +93,7 @@ async def main():
 
         # Send ATX power action: 'click', 'long', 'reset', or 'off'
         # await client.power_action("click")
+
 
 asyncio.run(main())
 ```
@@ -141,26 +143,31 @@ export PIKVM_TOTP="JBSWY3DPEHPK3PXP"     # Optional
 export PIKVM_CERT="/path/to/cert.pem"     # Optional
 ```
 
-### Subcommands
+### Fast & Simple Usage
+
+`pikvm-cli` accepts the target host as a positional argument and defaults to the `info` command. Flags can be placed anywhere:
 
 ```bash
-# 1. System, platform, and hardware overview
-pikvm-cli info
+# 1. Quick overview of a device (accepting self-signed certs)
+pikvm-cli 192.168.1.108 -k
 
-# 2. Hardware telemetry, temperatures, and throttling diagnostics
-pikvm-cli health
+# 2. Or using the self-documenting option:
+pikvm-cli 192.168.1.108 --accept-any-cert
 
-# 3. Mass Storage Device (MSD) partitions and ISO catalog
-pikvm-cli msd
+# 3. Subcommands (info, health, msd, collect, fetch-cert, power)
+pikvm-cli 192.168.1.108 health -k
+pikvm-cli 192.168.1.108 msd -k
+pikvm-cli 192.168.1.108 collect -k
 
-# 4. Trigger ATX power action (click, long, reset, off)
-pikvm-cli power click
+# 4. Fetch the remote TLS certificate as structured JSON or raw PEM
+pikvm-cli 192.168.1.108 fetch-cert --json
+pikvm-cli 192.168.1.108 fetch-cert -o /etc/ssl/certs/pikvm.pem
 
-# 5. Download the remote peer certificate to stdout or file
-pikvm-cli fetch-cert -o /etc/ssl/certs/pikvm.pem
+# 5. ATX Power Actions (click, long, reset, off)
+pikvm-cli 192.168.1.108 power click -k
 
-# 6. JSON output mode for pipelines and jq
-pikvm-cli --json health | jq '.throttling'
+# 6. JSON output mode for scripting and jq
+pikvm-cli 192.168.1.108 -k --json | jq .
 ```
 
 ---

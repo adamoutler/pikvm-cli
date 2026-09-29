@@ -13,6 +13,81 @@ from .client import PiKVMClient
 from .exceptions import PiKVMError
 from .tls import fetch_remote_cert
 
+KNOWN_COMMANDS = {"info", "health", "msd", "power", "fetch-cert", "collect"}
+
+
+def normalize_cli_args(argv: list[str]) -> list[str]:
+    """Normalize CLI arguments to support positional host and flexible placement."""
+    if not argv or "-h" in argv or "--help" in argv:
+        return argv
+
+    subcommand_value_flags = {"-o", "--output"}
+    root_value_flags = {
+        "-H",
+        "--host",
+        "-u",
+        "--username",
+        "-p",
+        "--password",
+        "-t",
+        "--totp",
+        "-c",
+        "--cert",
+        "--timeout",
+    }
+
+    root_flags: list[str] = []
+    subcommand_args: list[str] = []
+    extracted_target: str | None = None
+    command_found: str | None = None
+    has_host_flag = False
+
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in subcommand_value_flags:
+            subcommand_args.append(arg)
+            if i + 1 < len(argv):
+                subcommand_args.append(argv[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+        if arg in root_value_flags:
+            if arg in ("-H", "--host"):
+                has_host_flag = True
+            root_flags.append(arg)
+            if i + 1 < len(argv):
+                root_flags.append(argv[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+        if arg.startswith("-"):
+            # All boolean options (--json, -k, --accept-any-cert, etc.) belong to root
+            root_flags.append(arg)
+            i += 1
+            continue
+        if arg in KNOWN_COMMANDS and command_found is None:
+            command_found = arg
+            i += 1
+            continue
+        if not has_host_flag and extracted_target is None:
+            extracted_target = arg
+            i += 1
+            continue
+        subcommand_args.append(arg)
+        i += 1
+
+    final_cmd = command_found or "info"
+    result: list[str] = []
+    if extracted_target:
+        result.extend(["-H", extracted_target])
+    result.extend(root_flags)
+    result.append(final_cmd)
+    result.extend(subcommand_args)
+    return result
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
@@ -43,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-t",
         "--totp",
         default=os.environ.get("PIKVM_TOTP"),
-        help="TOTP base32 seed secret for 2FA (env: PIKVM_TOTP)",
+        help="TOTP base32 seed secret or 6/8-digit token (env: PIKVM_TOTP)",
     )
     parser.add_argument(
         "-c",
@@ -54,8 +129,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-k",
         "--insecure",
+        "--accept-any-cert",
+        dest="insecure",
         action="store_true",
-        help="Disable SSL/TLS certificate verification",
+        default=bool(os.environ.get("PIKVM_INSECURE") or os.environ.get("PIKVM_ACCEPT_ANY_CERT")),
+        help=(
+            "Accept any SSL/TLS certificate at the host (ignore self-signed, expired, "
+            "or hostname mismatches). Env: PIKVM_ACCEPT_ANY_CERT / PIKVM_INSECURE"
+        ),
+    )
+    parser.add_argument(
+        "--verify-ssl",
+        dest="insecure",
+        action="store_false",
+        help="Enforce strict SSL/TLS verification (disables --accept-any-cert)",
     )
     parser.add_argument(
         "--timeout",
@@ -69,7 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output raw JSON instead of formatted text",
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=False)
+    parser.set_defaults(command="info")
 
     # Subcommand: info
     subparsers.add_parser("info", help="Show system, hardware, and device information")
@@ -157,8 +245,11 @@ async def async_main(args: argparse.Namespace) -> int:
             if args.output:
                 with open(args.output, "w", encoding="utf-8") as f:
                     f.write(pem)
-                print(f"Certificate successfully written to {args.output}")
-            else:
+                if not args.json:
+                    print(f"Certificate successfully written to {args.output}")
+            if args.json:
+                print(json.dumps({"host": args.host, "certificate": pem}, indent=2))
+            elif not args.output:
                 print(pem)
             return 0
         except PiKVMError as err:
@@ -293,10 +384,13 @@ async def async_main(args: argparse.Namespace) -> int:
         return 2
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """CLI script entry point."""
+    if argv is None:
+        argv = sys.argv[1:]
+    normalized = normalize_cli_args(argv)
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(normalized)
     sys.exit(asyncio.run(async_main(args)))
 
 

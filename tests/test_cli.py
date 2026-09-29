@@ -169,3 +169,59 @@ async def test_cli_collect(
         assert "Performance:" in captured.out
         assert "MSD:" in captured.out
         assert "ATX:" in captured.out
+
+
+def test_cli_accept_any_cert_flag() -> None:
+    """Test --accept-any-cert option."""
+    parser = build_parser()
+    args1 = parser.parse_args(["-H", "pikvm.local", "--accept-any-cert"])
+    assert args1.insecure is True
+    assert args1.command == "info"
+
+    args2 = parser.parse_args(["-H", "pikvm.local", "-k"])
+    assert args2.insecure is True
+
+    args3 = parser.parse_args(["-H", "pikvm.local", "--verify-ssl"])
+    assert args3.insecure is False
+
+
+def test_cli_normalize_args() -> None:
+    """Test argument normalization for positional host and subcommands."""
+    from pikvm_aio.cli import normalize_cli_args
+
+    assert normalize_cli_args(["192.168.1.108"]) == ["-H", "192.168.1.108", "info"]
+    assert normalize_cli_args(["192.168.1.108", "info"]) == ["-H", "192.168.1.108", "info"]
+    assert normalize_cli_args(["info", "192.168.1.108"]) == ["-H", "192.168.1.108", "info"]
+    assert normalize_cli_args(["192.168.1.108", "--accept-any-cert"]) == [
+        "-H",
+        "192.168.1.108",
+        "--accept-any-cert",
+        "info",
+    ]
+    assert normalize_cli_args(["192.168.1.108", "fetch-cert", "--json"]) == [
+        "-H",
+        "192.168.1.108",
+        "--json",
+        "fetch-cert",
+    ]
+    assert normalize_cli_args(["192.168.1.108", "power", "click"]) == [
+        "-H",
+        "192.168.1.108",
+        "power",
+        "click",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cli_fetch_cert_json(capsys: pytest.CaptureFixture, sample_cert_pem: str) -> None:
+    """Test fetch-cert command with --json."""
+    parser = build_parser()
+    args = parser.parse_args(["-H", "pikvm.local", "--json", "fetch-cert"])
+
+    with patch("pikvm_aio.cli.fetch_remote_cert", new=AsyncMock(return_value=sample_cert_pem)):
+        code = await async_main(args)
+        assert code == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["host"] == "pikvm.local"
+        assert "-----BEGIN CERTIFICATE-----" in data["certificate"]

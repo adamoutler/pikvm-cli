@@ -27,7 +27,7 @@ from .tls import create_ssl_context, fetch_remote_cert, parse_host_port
 
 async_fetch_peer_certificate = fetch_remote_cert
 
-__version__ = "0.1.2"
+__version__ = "0.1.4"
 
 __all__ = [
     "HardwareHealth",
