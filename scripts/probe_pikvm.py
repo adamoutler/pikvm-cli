@@ -232,13 +232,13 @@ def print_report(data: dict[str, Any]) -> None:
     info_raw = endpoints.get("info", {})
     tls_info = data.get("tls", {})
 
-    platform_raw = info_raw.get("hw", {}).get("platform", {})
-    system_raw = info_raw.get("system", {})
-    kernel_raw = system_raw.get("kernel", {})
-    uptime_raw = info_raw.get("uptime", {}).get("parts", {})
-    atx_raw = endpoints.get("atx", {})
-    hid_raw = endpoints.get("hid", {})
-    streamer_raw = endpoints.get("streamer", {})
+    platform_raw = (info_raw.get("hw") or {}).get("platform") or {}
+    system_raw = info_raw.get("system") or {}
+    kernel_raw = system_raw.get("kernel") or {}
+    uptime_raw = (info_raw.get("uptime") or {}).get("parts") or {}
+    atx_raw = endpoints.get("atx") or {}
+    hid_raw = endpoints.get("hid") or {}
+    streamer_raw = endpoints.get("streamer") or {}
 
     print("=" * 72)
     print(f"  PiKVM Diagnostic Report: {models.get('name', 'PiKVM')}")
@@ -288,7 +288,7 @@ def print_report(data: dict[str, Any]) -> None:
     used_pct = models.get("msd_storage_percent_used")
     if tot_mb is not None:
         print(f"  Storage Capacity  : {tot_mb:,.1f} MB (Free: {free_mb:,.1f} MB, {used_pct}% used)")
-    images = models.get("msd_images", {})
+    images = models.get("msd_images") or {}
     print(f"  Available Images  : {len(images)}")
     for img_name, img_size in images.items():
         size_mb = round(img_size / (1024 * 1024), 1)
@@ -296,25 +296,28 @@ def print_report(data: dict[str, Any]) -> None:
 
     print("\n[ ATX Power Controller ]")
     print(f"  Controller Enabled: {atx_raw.get('enabled', False)}")
-    leds = atx_raw.get("leds", {})
+    leds = atx_raw.get("leds") or {}
     print(f"  Power LED State   : {'ON' if leds.get('power') else 'OFF'}")
     print(f"  HDD LED State     : {'ON' if leds.get('hdd') else 'OFF'}")
 
     print("\n[ HID & Video Streamer ]")
-    mouse_mode = hid_raw.get("mouse", {}).get("outputs", {}).get("active", "N/A")
+    mouse_mode = ((hid_raw.get("mouse") or {}).get("outputs") or {}).get("active", "N/A")
     print(f"  Mouse Active Mode : {mouse_mode}")
-    jiggler = hid_raw.get("jiggler", {})
+    jiggler = hid_raw.get("jiggler") or {}
     print(f"  HID Jiggler       : {'Enabled' if jiggler.get('enabled') else 'Disabled'}")
 
-    stream_conf = streamer_raw.get("streamer", {})
-    encoder = stream_conf.get("encoder", {}).get("type", "Unknown")
-    source = stream_conf.get("source", {})
-    res = source.get("resolution", {})
-    print(f"  Video Encoder     : {encoder}")
-    if res:
-        w, h = res.get("width", 0), res.get("height", 0)
-        fps = source.get("captured_fps", 0)
-        print(f"  Capture Resolution: {w}x{h} @ {fps} FPS")
+    stream_conf = streamer_raw.get("streamer") or {}
+    if stream_conf:
+        encoder = (stream_conf.get("encoder") or {}).get("type", "Unknown")
+        source = stream_conf.get("source") or {}
+        res = source.get("resolution") or {}
+        print(f"  Video Encoder     : {encoder}")
+        if res:
+            w, h = res.get("width", 0), res.get("height", 0)
+            fps = source.get("captured_fps", 0)
+            print(f"  Capture Resolution: {w}x{h} @ {fps} FPS")
+    else:
+        print("  Video Streamer    : Idle / Inactive (streamer process not reporting)")
 
     print("\n" + "=" * 72)
     print("  Report successfully collected from all KVMD endpoints.")

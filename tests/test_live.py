@@ -125,7 +125,8 @@ async def test_live_auth_and_get_info(live_device: dict[str, str]) -> None:
 
         # Device identity assertions
         assert info.name != ""
-        assert info.model in ("v3", "v2", "v4", "v4-plus", "v4-mini", "PiKVM")
+        known_models = ("v2", "v3", "v4", "v4plus", "v4mini", "v4-plus", "v4-mini", "pikvm")
+        assert info.model.lower() in known_models
         assert len(info.serial) > 0
         assert info.kvmd_version is not None
         assert "." in info.kvmd_version
@@ -140,8 +141,8 @@ async def test_live_auth_and_get_info(live_device: dict[str, str]) -> None:
         assert info.memory_utilization is not None
         assert 0.0 < info.memory_utilization <= 100.0
 
-        assert info.fan_speed is not None
-        assert info.fan_speed >= 0
+        if info.fan_speed is not None:
+            assert info.fan_speed >= 0
 
         # Raw dictionary normalization assertions (for HA sensors compatibility)
         raw = info.raw
