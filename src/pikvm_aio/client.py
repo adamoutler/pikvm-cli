@@ -50,6 +50,7 @@ class PiKVMClient:
         ssl_cert: str | bytes | None = None,
         check_hostname: bool = True,
         timeout: float = 10.0,
+        ssl_context: Any | None = None,
     ) -> None:
         """Initialize the PiKVM client.
 
@@ -63,6 +64,7 @@ class PiKVMClient:
             ssl_cert: In-memory PEM certificate string or bytes to trust.
             check_hostname: Whether to verify server hostname matches cert.
             timeout: Request timeout in seconds.
+            ssl_context: Optional pre-configured ssl.SSLContext.
 
         """
         raw_host = host.strip()
@@ -98,11 +100,14 @@ class PiKVMClient:
 
         self._session = session
         self._owns_session = session is None
-        self._ssl_context = create_ssl_context(
-            verify_ssl=self.verify_ssl,
-            ssl_cert=self.ssl_cert,
-            check_hostname=self.check_hostname,
-        )
+        if ssl_context is not None:
+            self._ssl_context = ssl_context
+        else:
+            self._ssl_context = create_ssl_context(
+                verify_ssl=self.verify_ssl,
+                ssl_cert=self.ssl_cert,
+                check_hostname=self.check_hostname,
+            )
 
     def _get_auth_header(self) -> str:
         """Calculate the Authorization header (Basic auth + optional TOTP)."""

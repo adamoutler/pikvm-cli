@@ -284,3 +284,11 @@ async def test_non_dict_response_raises() -> None:
     async with client:
         with pytest.raises(PiKVMDeviceError):
             await client.get_info()
+
+
+def test_client_custom_ssl_context() -> None:
+    """Test initializing client with custom pre-configured SSL context."""
+    custom_ctx = MagicMock()
+    client = PiKVMClient("pikvm.local", ssl_context=custom_ctx)
+    assert client._ssl_context is custom_ctx
+

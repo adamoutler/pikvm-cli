@@ -46,16 +46,15 @@ def create_ssl_context(
     writing temporary files to disk.
     """
     if not verify_ssl:
-        context = ssl.create_default_context()
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         return context
 
-    context = ssl.create_default_context()
-    context.check_hostname = check_hostname
-    context.verify_mode = ssl.CERT_REQUIRED
-
     if ssl_cert is not None:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = check_hostname
+        context.verify_mode = ssl.CERT_REQUIRED
         cert_data = (ssl_cert if isinstance(ssl_cert, str) else ssl_cert.decode("utf-8")).strip()
         try:
             context.load_verify_locations(cadata=cert_data)
@@ -63,7 +62,11 @@ def create_ssl_context(
             raise PiKVMCertificateError(
                 f"Failed to load certificate into SSLContext: {err}"
             ) from err
+        return context
 
+    context = ssl.create_default_context()
+    context.check_hostname = check_hostname
+    context.verify_mode = ssl.CERT_REQUIRED
     return context
 
 
@@ -79,8 +82,9 @@ async def fetch_remote_cert(
     hostname, port = parse_host_port(target, default_port)
     _LOGGER.debug("Fetching SSL certificate from %s:%s", hostname, port)
 
-    # Use a permissive context purely to complete the handshake and read the peer certificate
-    ctx = ssl.create_default_context()
+    # Use a permissive in-memory context purely to complete the handshake
+    # and read the peer certificate
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
