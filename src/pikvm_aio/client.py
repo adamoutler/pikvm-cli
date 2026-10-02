@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import json
 import logging
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from pathlib import Path
 from types import TracebackType
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -18,8 +22,24 @@ from .exceptions import (
     PiKVMDeviceError,
     PiKVMTimeoutError,
 )
-from .models import MsdInfo, PiKVMDeviceInfo
+from .models import (
+    HidDeviceState,
+    HidMacro,
+    KeyboardKeymaps,
+    MsdInfo,
+    MsdRemoteProgress,
+    MsdUploadProgress,
+    PiKVMDeviceInfo,
+)
 from .tls import create_ssl_context
+from .validators import (
+    sanitize_hid_text,
+    validate_hid_key,
+    validate_hid_shortcut,
+    validate_iso_filename,
+    validate_local_iso_file,
+    validate_ocr_box,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -272,14 +292,500 @@ class PiKVMClient:
             "streamer": streamer,
         }
 
+    # -------------------------------------------------------------------------
+    # ATX Power Operations
+    # -------------------------------------------------------------------------
+
     async def power_action(self, action: str) -> bool:
-        """Send an ATX power command (e.g. 'click', 'long', 'reset', 'off')."""
-        valid_actions = {"click", "long", "reset", "off"}
+        """Send an ATX power command or button click.
+
+        Supports button clicks ('click', 'long', 'reset', 'power', 'power_long') and
+        power states ('on', 'off', 'off_hard', 'reset_hard').
+        """
+        valid_actions = {
+            "click",
+            "long",
+            "reset",
+            "power",
+            "power_long",
+            "on",
+            "off",
+            "off_hard",
+            "reset_hard",
+        }
         if action not in valid_actions:
             raise ValueError(f"Invalid ATX power action '{action}'. Must be one of {valid_actions}")
 
-        result = await self._request("POST", "/api/atx/power", params={"action": action})
-        return bool(result)
+        if action in ("click", "power"):
+            result = await self._request("POST", "/api/atx/click", params={"button": "power"})
+        elif action in ("long", "power_long"):
+            result = await self._request("POST", "/api/atx/click", params={"button": "power_long"})
+        elif action == "reset":
+            result = await self._request("POST", "/api/atx/click", params={"button": "reset"})
+        else:
+            result = await self._request("POST", "/api/atx/power", params={"action": action})
+        return bool(result is not None)
+
+    # -------------------------------------------------------------------------
+    # MSD / ISO Operations
+    # -------------------------------------------------------------------------
+
+    async def upload_msd_image(
+        self,
+        file_path: str | Path,
+        image_name: str | None = None,
+        remove_incomplete: bool = True,
+        chunk_size: int = 1048576,
+        progress_callback: Callable[[MsdUploadProgress], None | Awaitable[None]] | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """Stream an ISO image to PiKVM MSD storage without loading it fully into RAM.
+
+        Endpoint: POST /api/msd/write?image=<name>&remove_incomplete=1
+        """
+        resolved_path = validate_local_iso_file(file_path)
+        file_size = resolved_path.stat().st_size
+        target_name = validate_iso_filename(image_name or resolved_path.name)
+
+        session = await self._get_session()
+        params = {
+            "image": target_name,
+            "remove_incomplete": "1" if remove_incomplete else "0",
+        }
+        headers = {
+            "Authorization": self._get_auth_header(),
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(file_size),
+        }
+
+        async def _file_chunk_generator() -> AsyncIterator[bytes]:
+            sent = 0
+            start_time = asyncio.get_running_loop().time()
+            with open(resolved_path, "rb") as f:
+                while chunk := f.read(chunk_size):
+                    yield chunk
+                    sent += len(chunk)
+                    if progress_callback:
+                        now = asyncio.get_running_loop().time()
+                        elapsed = max(0.001, now - start_time)
+                        speed = sent / elapsed
+                        pct = round((sent / file_size) * 100, 2) if file_size > 0 else 0.0
+                        res = progress_callback(
+                            MsdUploadProgress(
+                                bytes_sent=sent,
+                                total_bytes=file_size,
+                                percent=pct,
+                                speed_bps=speed,
+                                elapsed_seconds=elapsed,
+                            )
+                        )
+                        if asyncio.iscoroutine(res):
+                            await res
+
+        url = f"{self.base_url}/api/msd/write"
+        client_timeout = aiohttp.ClientTimeout(
+            total=timeout, sock_read=timeout or 300.0, sock_connect=15.0
+        )
+
+        try:
+            async with session.post(
+                url,
+                params=params,
+                data=_file_chunk_generator(),
+                headers=headers,
+                ssl=self._ssl_context,
+                timeout=client_timeout,
+            ) as resp:
+                if resp.status in (401, 403):
+                    body = await resp.text()
+                    raise PiKVMAuthenticationError(
+                        f"Authentication failed (HTTP {resp.status}): {body}"
+                    )
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise PiKVMDeviceError(f"MSD upload failed (HTTP {resp.status}): {body}")
+                payload = await resp.json()
+                return bool(payload.get("ok", True))
+        except (Exception, asyncio.CancelledError) as err:
+            _LOGGER.warning(
+                "MSD upload of %s interrupted: %s. Initiating compensating rollback...",
+                target_name,
+                err,
+            )
+            if remove_incomplete:
+                try:
+                    await self.remove_msd_image(target_name)
+                except Exception as cleanup_err:
+                    _LOGGER.debug("Compensating rollback failed: %s", cleanup_err)
+            raise
+
+    async def download_msd_remote(
+        self,
+        url: str,
+        image_name: str | None = None,
+        timeout: float | None = None,
+        progress_callback: Callable[[MsdRemoteProgress], None | Awaitable[None]] | None = None,
+    ) -> AsyncIterator[MsdRemoteProgress]:
+        """Trigger PiKVM to download an ISO from a remote URL with live NDJSON progress."""
+        session = await self._get_session()
+        target_url = f"{self.base_url}/api/msd/write_remote"
+        params: dict[str, Any] = {"url": url}
+        if image_name:
+            params["image"] = validate_iso_filename(image_name)
+
+        client_timeout = aiohttp.ClientTimeout(
+            total=timeout, sock_read=timeout or 300.0, sock_connect=15.0
+        )
+        headers = {
+            "Authorization": self._get_auth_header(),
+            "Accept": "application/x-ndjson, application/json",
+        }
+
+        async with session.post(
+            target_url,
+            params=params,
+            headers=headers,
+            ssl=self._ssl_context,
+            timeout=client_timeout,
+        ) as resp:
+            resp.raise_for_status()
+            async for raw_line in resp.content:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                progress = MsdRemoteProgress.from_dict(data)
+                if progress_callback:
+                    res = progress_callback(progress)
+                    if asyncio.iscoroutine(res):
+                        await res
+                yield progress
+
+    async def remove_msd_image(self, image: str) -> bool:
+        """Remove a disk image from MSD storage. POST /api/msd/remove?image=<name>."""
+        clean_name = validate_iso_filename(image)
+        res = await self._request("POST", "/api/msd/remove", params={"image": clean_name})
+        return bool(res is not None)
+
+    async def set_msd_params(
+        self,
+        image: str | None = None,
+        cdrom: bool | None = None,
+        rw: bool | None = None,
+    ) -> bool:
+        """Configure MSD drive parameters. POST /api/msd/set_params."""
+        params: dict[str, Any] = {}
+        if image is not None:
+            params["image"] = validate_iso_filename(image) if image else ""
+        if cdrom is not None:
+            params["cdrom"] = "1" if cdrom else "0"
+        if rw is not None:
+            params["rw"] = "1" if rw else "0"
+        res = await self._request("POST", "/api/msd/set_params", params=params)
+        return bool(res is not None)
+
+    async def set_msd_connected(self, connected: bool) -> bool:
+        """Connect or disconnect virtual USB drive. POST /api/msd/set_connected."""
+        res = await self._request(
+            "POST",
+            "/api/msd/set_connected",
+            params={"connected": "1" if connected else "0"},
+        )
+        return bool(res is not None)
+
+    async def reset_msd(self) -> bool:
+        """Reset MSD to factory default configuration. POST /api/msd/reset."""
+        res = await self._request("POST", "/api/msd/reset")
+        return bool(res is not None)
+
+    async def mount_msd_image(
+        self,
+        image: str,
+        cdrom: bool = True,
+        rw: bool = False,
+        connect: bool = True,
+    ) -> bool:
+        """High-level helper: select image and connect the drive."""
+        ok = await self.set_msd_params(image=image, cdrom=cdrom, rw=rw)
+        if ok and connect:
+            return await self.set_msd_connected(True)
+        return ok
+
+    async def unmount_msd_image(self, disconnect: bool = True) -> bool:
+        """High-level helper: disconnect drive and clear selected image."""
+        if disconnect:
+            await self.set_msd_connected(False)
+        return await self.set_msd_params(image="")
+
+    # -------------------------------------------------------------------------
+    # HID Automation Operations
+    # -------------------------------------------------------------------------
+
+    async def get_hid_state(self) -> HidDeviceState:
+        """Fetch current HID state. GET /api/hid."""
+        raw = await self._request("GET", "/api/hid")
+        return HidDeviceState.from_dict(raw)
+
+    async def get_keymaps(self) -> KeyboardKeymaps:
+        """Fetch available typing layouts. GET /api/hid/keymaps."""
+        raw = await self._request("GET", "/api/hid/keymaps")
+        return KeyboardKeymaps.from_dict(raw)
+
+    async def send_key(
+        self,
+        key: str,
+        state: bool | None = None,
+        finish: bool = False,
+    ) -> bool:
+        """Send a single key event. POST /api/hid/events/send_key."""
+        canonical_key = validate_hid_key(key)
+        params: dict[str, Any] = {"key": canonical_key}
+        if state is not None:
+            params["state"] = "1" if state else "0"
+            if finish:
+                params["finish"] = "1"
+        res = await self._request("POST", "/api/hid/events/send_key", params=params)
+        return bool(res is not None)
+
+    async def tap_key(self, key: str, delay: float = 0.05) -> bool:
+        """Tap a key: press, sleep, release with finish."""
+        canonical_key = validate_hid_key(key)
+        await self.send_key(canonical_key, state=True, finish=False)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return await self.send_key(canonical_key, state=False, finish=True)
+
+    async def send_shortcut(self, keys: str | Sequence[str]) -> bool:
+        """Send a key combination shortcut (e.g. 'ControlLeft,AltLeft,Delete')."""
+        valid_keys = validate_hid_shortcut(keys)
+        keys_str = ",".join(valid_keys)
+        res = await self._request(
+            "POST", "/api/hid/events/send_shortcut", params={"keys": keys_str}
+        )
+        return bool(res is not None)
+
+    async def print_text(
+        self,
+        text: str,
+        keymap: str | None = None,
+        delay: float | None = None,
+        slow: bool = False,
+    ) -> bool:
+        """Send raw text string to type. POST /api/hid/print."""
+        sanitized = sanitize_hid_text(text)
+        params: dict[str, Any] = {}
+        if keymap:
+            params["keymap"] = keymap
+        if delay is not None:
+            params["delay"] = str(delay)
+        if slow:
+            params["slow"] = "1"
+
+        session = await self._get_session()
+        url = f"{self.base_url}/api/hid/print"
+        headers = {
+            "Authorization": self._get_auth_header(),
+            "Content-Type": "text/plain; charset=utf-8",
+        }
+        async with session.post(
+            url,
+            params=params,
+            data=sanitized.encode("utf-8"),
+            headers=headers,
+            ssl=self._ssl_context,
+        ) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+            return bool(payload.get("ok", True))
+
+    async def send_mouse_button(
+        self,
+        button: str = "left",
+        state: bool | None = None,
+    ) -> bool:
+        """Send mouse button event. POST /api/hid/events/send_mouse_button."""
+        params: dict[str, Any] = {"button": button}
+        if state is not None:
+            params["state"] = "1" if state else "0"
+        res = await self._request("POST", "/api/hid/events/send_mouse_button", params=params)
+        return bool(res is not None)
+
+    async def move_mouse(self, to_x: int, to_y: int) -> bool:
+        """Move cursor to absolute coordinates. POST /api/hid/events/send_mouse_move."""
+        params = {"to_x": str(to_x), "to_y": str(to_y)}
+        res = await self._request("POST", "/api/hid/events/send_mouse_move", params=params)
+        return bool(res is not None)
+
+    async def click_mouse(
+        self,
+        button: str = "left",
+        to_x: int | None = None,
+        to_y: int | None = None,
+        delay: float = 0.05,
+        double_click: bool = False,
+    ) -> bool:
+        """Tap mouse button with optional coordinate target and double-click support."""
+        if to_x is not None and to_y is not None:
+            await self.move_mouse(to_x=to_x, to_y=to_y)
+
+        clicks = 2 if double_click else 1
+        for i in range(clicks):
+            await self.send_mouse_button(button=button, state=True)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await self.send_mouse_button(button=button, state=False)
+            if double_click and i == 0:
+                await asyncio.sleep(0.08)
+        return True
+
+    async def play_macro(
+        self,
+        macro: HidMacro | Sequence[dict[str, Any]],
+        abort_on_error: bool = True,
+    ) -> list[bool]:
+        """Execute a recorded PiKVM recorder script JSON sequence."""
+        if isinstance(macro, HidMacro):
+            compiled = macro
+        elif isinstance(macro, (list, tuple)):
+            compiled = HidMacro.from_list(list(macro))
+        else:
+            raise ValueError(f"Unsupported macro input type: {type(macro)}")
+
+        results: list[bool] = []
+        for step in compiled.steps:
+            try:
+                ok = True
+                etype = step.event_type
+                ev = step.event
+
+                if etype == "delay":
+                    delay_sec = step.delay_ms / 1000.0 if step.delay_ms > 0 else 0.05
+                    await asyncio.sleep(delay_sec)
+                elif etype == "key":
+                    key_val = str(ev.get("key", ""))
+                    st = ev.get("state")
+                    ok = await self.send_key(key_val, state=st)
+                elif etype in ("print", "text"):
+                    ok = await self.print_text(
+                        text=str(ev.get("text", "")),
+                        keymap=ev.get("keymap"),
+                        delay=ev.get("delay"),
+                        slow=bool(ev.get("slow", False)),
+                    )
+                elif etype == "mouse_button":
+                    btn = str(ev.get("button", "left"))
+                    st = ev.get("state")
+                    ok = await self.send_mouse_button(btn, state=st)
+                elif etype == "mouse_move":
+                    target_to = ev.get("to", {})
+                    x = int(target_to.get("x", 0))
+                    y = int(target_to.get("y", 0))
+                    ok = await self.move_mouse(x, y)
+                elif etype == "gpio_switch":
+                    ch = str(ev.get("channel", ""))
+                    to_st = bool(ev.get("state", False))
+                    ok = await self.switch_gpio(ch, to_st)
+                elif etype == "gpio_pulse":
+                    ch = str(ev.get("channel", ""))
+                    ok = await self.pulse_gpio(ch)
+                elif etype == "atx_button":
+                    btn = str(ev.get("button", "power"))
+                    ok = await self.power_action(btn)
+
+                results.append(ok)
+                if not ok and abort_on_error:
+                    break
+            except Exception:
+                results.append(False)
+                if abort_on_error:
+                    raise
+
+        return results
+
+    # -------------------------------------------------------------------------
+    # Screen OCR Operations
+    # -------------------------------------------------------------------------
+
+    async def get_ocr_text(
+        self,
+        left: int = -1,
+        top: int = -1,
+        right: int = -1,
+        bottom: int = -1,
+        langs: str = "eng",
+        allow_offline: bool = True,
+    ) -> str:
+        """Extract text from the screen or specific region using PiKVM OCR.
+
+        Endpoint: GET /api/streamer/snapshot?ocr=1&ocr_langs=<langs>&...
+        """
+        valid_left, valid_top, valid_right, valid_bottom = validate_ocr_box(
+            left, top, right, bottom
+        )
+        params: dict[str, Any] = {
+            "ocr": "1",
+            "ocr_langs": langs,
+            "allow_offline": "1" if allow_offline else "0",
+        }
+        if valid_left >= 0 and valid_top >= 0 and valid_right >= 0 and valid_bottom >= 0:
+            params["ocr_left"] = str(valid_left)
+            params["ocr_top"] = str(valid_top)
+            params["ocr_right"] = str(valid_right)
+            params["ocr_bottom"] = str(valid_bottom)
+
+        session = await self._get_session()
+        url = f"{self.base_url}/api/streamer/snapshot"
+        headers = {
+            "Authorization": self._get_auth_header(),
+            "Accept": "text/plain",
+        }
+        async with session.get(
+            url,
+            params=params,
+            headers=headers,
+            ssl=self._ssl_context,
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.text()
+
+    # -------------------------------------------------------------------------
+    # GPIO Subsystem Operations
+    # -------------------------------------------------------------------------
+
+    async def read_gpio(self) -> dict[str, Any]:
+        """Fetch raw GPIO status and scheme dictionary. GET /api/gpio."""
+        return await self.get_raw_gpio()
+
+    async def switch_gpio(
+        self,
+        channel: str,
+        state: bool,
+        wait: bool = False,
+    ) -> bool:
+        """Switch an output GPIO channel on or off. POST /api/gpio/switch."""
+        params = {
+            "channel": channel,
+            "state": "1" if state else "0",
+            "wait": "1" if wait else "0",
+        }
+        res = await self._request("POST", "/api/gpio/switch", params=params)
+        return bool(res is not None)
+
+    async def pulse_gpio(
+        self,
+        channel: str,
+        delay: float | None = None,
+        wait: bool = False,
+    ) -> bool:
+        """Trigger a momentary pulse on an output GPIO channel. POST /api/gpio/pulse."""
+        params: dict[str, Any] = {
+            "channel": channel,
+            "wait": "1" if wait else "0",
+        }
+        if delay is not None:
+            params["delay"] = str(delay)
+        res = await self._request("POST", "/api/gpio/pulse", params=params)
+        return bool(res is not None)
 
     async def close(self) -> None:
         """Close the underlying session if owned by this client."""

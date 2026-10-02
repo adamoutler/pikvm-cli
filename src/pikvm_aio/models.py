@@ -394,3 +394,163 @@ class PiKVMDeviceInfo:
             kvmd_version=str(kvmd_ver) if kvmd_ver is not None else None,
             raw=raw_copy,
         )
+
+
+@dataclass(slots=True, frozen=True)
+class MsdUploadProgress:
+    """Progress snapshot for chunked local ISO streaming uploads."""
+
+    bytes_sent: int
+    total_bytes: int
+    percent: float
+    speed_bps: float = 0.0
+    elapsed_seconds: float = 0.0
+
+    @property
+    def speed_mbps(self) -> float:
+        return round(self.speed_bps / (1024 * 1024), 2)
+
+
+@dataclass(slots=True, frozen=True)
+class MsdRemoteProgress:
+    """Progress event received from the NDJSON stream during remote ISO download."""
+
+    status: str
+    written_bytes: int = 0
+    total_bytes: int | None = None
+    percent: float | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MsdRemoteProgress:
+        result = data.get("result", data)
+        img = result.get("image", result) if isinstance(result, dict) else {}
+        written = int(img.get("written", img.get("current", 0)))
+        total = img.get("size", img.get("total"))
+        total_int = int(total) if total is not None and int(total) > 0 else None
+        raw_pct = img.get("percent")
+        pct = float(raw_pct) if raw_pct is not None else None
+        if pct is None and total_int and total_int > 0:
+            pct = round((written / total_int) * 100, 2)
+
+        return cls(
+            status=str(data.get("status", "downloading")),
+            written_bytes=written,
+            total_bytes=total_int,
+            percent=pct,
+            raw=data,
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class MsdDriveParams:
+    """Drive parameters and mounted image configuration."""
+
+    image: str | None = None
+    cdrom: bool = True
+    rw: bool = False
+    connected: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> MsdDriveParams:
+        data = data or {}
+        return cls(
+            image=data.get("image"),
+            cdrom=bool(data.get("cdrom", True)),
+            rw=bool(data.get("rw", False)),
+            connected=bool(data.get("connected", False)),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class KeyboardKeymaps:
+    """Available keyboard layouts for text typing (/api/hid/keymaps)."""
+
+    available: tuple[str, ...] = field(default_factory=tuple)
+    default: str = "en-us"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> KeyboardKeymaps:
+        data = data or {}
+        km = data.get("keymaps", data)
+        return cls(
+            available=tuple(str(k) for k in km.get("available", ())),
+            default=str(km.get("default", "en-us")),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class HidDeviceState:
+    """Current state of HID inputs and jiggler (/api/hid)."""
+
+    online: bool = True
+    busy: bool = False
+    keyboard_online: bool = True
+    mouse_online: bool = True
+    caps_lock: bool = False
+    num_lock: bool = False
+    scroll_lock: bool = False
+    jiggler_active: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> HidDeviceState:
+        data = data or {}
+        kb = data.get("keyboard", {})
+        leds = kb.get("leds", {}) if isinstance(kb, dict) else {}
+        mouse = data.get("mouse", {})
+        jiggler = data.get("jiggler", {})
+
+        return cls(
+            online=bool(data.get("online", True)),
+            busy=bool(data.get("busy", False)),
+            keyboard_online=bool(kb.get("online", True)) if isinstance(kb, dict) else True,
+            mouse_online=bool(mouse.get("online", True)) if isinstance(mouse, dict) else True,
+            caps_lock=bool(leds.get("caps", False)),
+            num_lock=bool(leds.get("num", False)),
+            scroll_lock=bool(leds.get("scroll", False)),
+            jiggler_active=bool(jiggler.get("active", False)),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class HidMacroStep:
+    """Single event step in a PiKVM recorder macro script."""
+
+    event_type: str
+    event: dict[str, Any] = field(default_factory=dict)
+    delay_ms: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HidMacroStep:
+        etype = str(data.get("event_type", data.get("action", "delay")))
+        event_dict = data.get("event", {})
+        if not isinstance(event_dict, dict):
+            event_dict = {"value": event_dict}
+        delay = 0
+        if etype == "delay":
+            delay = int(event_dict.get("millis", data.get("delay", 0)))
+        return cls(event_type=etype, event=dict(event_dict), delay_ms=delay)
+
+
+@dataclass(slots=True, frozen=True)
+class HidMacro:
+    """Collection of macro steps loaded from PiKVM UI recorder JSON script."""
+
+    steps: tuple[HidMacroStep, ...] = field(default_factory=tuple)
+
+    @classmethod
+    def from_list(cls, items: list[dict[str, Any]]) -> HidMacro:
+        return cls(steps=tuple(HidMacroStep.from_dict(it) for it in items))
+
+
+@dataclass(slots=True, frozen=True)
+class OcrResult:
+    """Recognized OCR text and region."""
+
+    text: str
+    langs: str = "eng"
+    left: int = -1
+    top: int = -1
+    right: int = -1
+    bottom: int = -1
+    raw: str = ""

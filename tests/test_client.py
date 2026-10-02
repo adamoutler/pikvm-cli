@@ -291,4 +291,3 @@ def test_client_custom_ssl_context() -> None:
     custom_ctx = MagicMock()
     client = PiKVMClient("pikvm.local", ssl_context=custom_ctx)
     assert client._ssl_context is custom_ctx
-

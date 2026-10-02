@@ -25,3 +25,19 @@ class PiKVMAuthenticationError(PiKVMError):
 
 class PiKVMDeviceError(PiKVMError):
     """Raised when PiKVM reports an internal error or unexpected API response."""
+
+
+class PiKVMValidationError(PiKVMError):
+    """Raised when input parameters, filenames, or coordinates fail validation."""
+
+
+class PiKVMInvalidKeyError(PiKVMValidationError):
+    """Raised when an unrecognized key or shortcut sequence is supplied."""
+
+
+class PiKVMInvalidTextError(PiKVMValidationError):
+    """Raised when text for typing contains unprintable or invalid characters."""
+
+
+class PiKVMSafetyError(PiKVMError):
+    """Raised when a high-consequence action is attempted without required confirmation."""

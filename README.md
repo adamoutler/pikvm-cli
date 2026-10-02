@@ -20,7 +20,10 @@ Engineered for homelab automation, devops scripting, and integration into platfo
 | Capability | In-Scope (`pikvm-aio`) | Out-of-Scope (External Consumers) |
 | :--- | :--- | :--- |
 | **KVMD Telemetry** | Parsing CPU, RAM, Fan, Temp, and Throttling flags | Registering entity sensors or UI dashboards |
-| **Virtual Media (MSD)** | Querying drive mount status, storage usage, ISO catalogue | Uploading ISO images or formatting physical flash media |
+| **Virtual Media (MSD)** | ISO uploading/downloading, drive mounting, storage usage | Low-level flash partitioning or raw disk formatting |
+| **HID Automation** | Keystrokes, typing text, shortcuts, mouse clicks & macros | OS-level input capture or local hardware emulation |
+| **Screen OCR** | Server-side text recognition via bounding box coords | Local OCR model training or image processing |
+| **GPIO Control** | Reading channel status, firing switch and pulse triggers | Direct electrical pin wiring or board-level design |
 | **ATX Power Control** | Dispatching validated `click`, `long`, `reset`, `off` actions | Configuring BIOS/UEFI firmware settings |
 | **TLS & Security** | In-memory CA validation, peer certificate extraction | Writing certs to disk, generating custom CA root keys |
 | **Video Streams** | Discovering MJPEG/WebRTC streaming endpoints & tokens | Video frame decoding, FFmpeg transcoding, canvas rendering |
@@ -159,14 +162,32 @@ pikvm-cli 192.168.1.108 health -k
 pikvm-cli 192.168.1.108 msd -k
 pikvm-cli 192.168.1.108 collect -k
 
-# 4. Fetch the remote TLS certificate as structured JSON or raw PEM
+# 4. Virtual Media (ISO / MSD) Management
+pikvm-cli 192.168.1.108 iso upload /path/to/ubuntu.iso -k
+pikvm-cli 192.168.1.108 iso mount ubuntu.iso -k
+pikvm-cli 192.168.1.108 iso unmount -k
+
+# 5. Remote HID Automation (Keys, Text, Shortcuts, Mouse, Macros)
+pikvm-cli 192.168.1.108 hid text "uname -a" -k
+pikvm-cli 192.168.1.108 hid shortcut ControlLeft AltLeft Delete -k
+pikvm-cli 192.168.1.108 hid click --button left --to 100,200 -k
+pikvm-cli 192.168.1.108 hid macro run script.json -k
+
+# 6. Screen OCR Text Extraction
+pikvm-cli 192.168.1.108 ocr --xywh 0,2,281,79 -k
+
+# 7. GPIO Control
+pikvm-cli 192.168.1.108 gpio read -k
+pikvm-cli 192.168.1.108 gpio pulse power_switch -k
+
+# 8. Fetch the remote TLS certificate as structured JSON or raw PEM
 pikvm-cli 192.168.1.108 fetch-cert --json
 pikvm-cli 192.168.1.108 fetch-cert -o /etc/ssl/certs/pikvm.pem
 
-# 5. ATX Power Actions (click, long, reset, off)
+# 9. ATX Power Actions (click, long, reset, off)
 pikvm-cli 192.168.1.108 power click -k
 
-# 6. JSON output mode for scripting and jq
+# 10. JSON output mode for scripting and jq
 pikvm-cli 192.168.1.108 -k --json | jq .
 ```
 
@@ -182,7 +203,11 @@ PiKVMError
 │   ├── PiKVMTimeoutError         # Request or connection timeout
 │   └── PiKVMCertificateError     # TLS verification or certificate parsing failure
 ├── PiKVMAuthenticationError      # HTTP 401, 403, bad password, invalid TOTP secret
-└── PiKVMDeviceError              # HTTP 5xx, ok=false payload, malformed response
+├── PiKVMDeviceError              # HTTP 5xx, ok=false payload, malformed response
+└── PiKVMValidationError          # Input validation, path traversal, out-of-bounds coords
+    ├── PiKVMInvalidKeyError      # Unknown/unsupported keyboard key name
+    ├── PiKVMInvalidTextError     # Malformed or out-of-range text payload
+    └── PiKVMSafetyError          # High-consequence action attempted without required confirmation
 ```
 
 ---
