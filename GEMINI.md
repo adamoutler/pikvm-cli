@@ -1,9 +1,9 @@
-# Module Manifest: `pikvm-aio`
+# Module Manifest: `pikvm-cli`
 
 ## Description
-`pikvm-aio` is a standalone, high-performance, asynchronous Python client library and CLI tool (`pikvm-cli`) for interacting with PiKVM devices (v2, v3, v4, Mini, Plus) running the `kvmd` REST API.
+`pikvm-cli` is a standalone, high-performance, asynchronous Python client library and system administration CLI for interacting with PiKVM devices (v2, v3, v4, Mini, Plus) running the `kvmd` REST API.
 
-It is specifically engineered to meet and exceed Home Assistant Core architectural standards (ADR-0010, Integration Quality Scale Silver/Gold), featuring zero-disk TLS certificate trust, connection pooling via `aiohttp`, Basic + TOTP 2FA authentication, strongly typed data models, virtual media (ISO/MSD) streaming, HID automation (keys, typing, mouse, macros), screen OCR text recognition, GPIO control, and a unified CLI.
+It is specifically engineered to meet and exceed Home Assistant Core architectural standards (ADR-0010, Integration Quality Scale Silver/Gold), featuring zero-disk TLS certificate trust, connection pooling via `aiohttp`, Basic + TOTP 2FA authentication, strongly typed data models, virtual media (ISO/MSD) streaming, HID automation (keys, typing, mouse, macros), screen OCR text recognition, GPIO control, and a unified CLI. It provides dual import support under both `pikvm_cli` and `pikvm_aio` for complete backwards compatibility.
 
 ## Dependencies
 - **Runtime:**
@@ -15,7 +15,7 @@ It is specifically engineered to meet and exceed Home Assistant Core architectur
   - `ruff`, `mypy`, `build`, `twine`
 
 ## Dependent Systems
-- **Home Assistant Core Integration (`homeassistant.components.pikvm`):** Uses `pikvm-aio` as its upstream PyPI client for device communication and polling coordinators.
+- **Home Assistant Core Integration (`homeassistant.components.pikvm` / `custom_components.pikvm_ha`):** Uses the library as its upstream client for device communication and polling coordinators.
 - **Standalone CLI Users:** System administrators using `pikvm-cli` for automated health reporting, MSD ISO management, HID remote scripting, screen OCR, and GPIO/ATX power control in scripts and shell automation.
 - **CI/CD Automation:** Automated Forgejo / GitHub Actions pipeline for linting, testing, packaging, and publishing to PyPI.
 

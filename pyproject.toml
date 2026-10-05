@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pikvm-aio"
+name = "pikvm-cli"
 version = "0.1.5"
-description = "Asynchronous Python client library and CLI for PiKVM"
+description = "Command-line interface (CLI) and asynchronous client library for PiKVM"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -15,6 +15,7 @@ authors = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -43,20 +44,20 @@ dev = [
 ]
 
 [project.scripts]
-pikvm-cli = "pikvm_aio.cli:main"
+pikvm-cli = "pikvm_cli.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/adamoutler/pikvm-aio"
-Repository = "https://github.com/adamoutler/pikvm-aio"
-Issues = "https://github.com/adamoutler/pikvm-aio/issues"
+Homepage = "https://github.com/adamoutler/pikvm-cli"
+Repository = "https://github.com/adamoutler/pikvm-cli"
+Issues = "https://github.com/adamoutler/pikvm-cli/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pikvm_aio"]
+packages = ["src/pikvm_cli", "src/pikvm_aio"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-ra --cov=pikvm_aio --cov-report=term-missing --cov-report=xml -m 'not live'"
+addopts = "-ra --cov=pikvm_aio --cov=pikvm_cli --cov-report=term-missing --cov-report=xml -m 'not live'"
 markers = [
     "live: Integration tests that interact with live PiKVM hardware (run with -m live)",
 ]
