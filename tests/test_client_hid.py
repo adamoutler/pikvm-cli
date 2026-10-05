@@ -157,7 +157,7 @@ async def test_play_macro() -> None:
     ]
 
     with patch("asyncio.sleep", new=AsyncMock()):
-        results = await client.play_macro(macro_script)
+        results = await client.play_macro(macro_script, allow_hardware_control=True)
 
     assert len(results) == 8
     assert all(results)
@@ -167,4 +167,4 @@ async def test_play_macro() -> None:
     client.move_mouse.assert_awaited_with(10, 20)
     client.switch_gpio.assert_awaited_with("relay", True)
     client.pulse_gpio.assert_awaited_with("btn")
-    client.power_action.assert_awaited_with("power")
+    client.power_action.assert_awaited_with("power", force=True)

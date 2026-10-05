@@ -1,7 +1,13 @@
 """Live integration tests against an online PiKVM hardware device.
 
-If the configured PiKVM device is not online or reachable, tests are automatically
-and cleanly skipped with pytest.skip, ensuring offline and CI runners pass without error.
+These tests interact with a real, physical PiKVM hardware device over the network.
+They are quarantined from default test runs via the 'live' pytest marker and require
+explicit opt-in via environment variables:
+  - PIKVM_ENABLE_LIVE_TESTS=1
+  - PIKVM_LIVE_HOST=https://user:password@hostname:port (or PIKVM_LIVE_USER / PIKVM_LIVE_PASSWORD)
+
+If not explicitly enabled or if the configured PiKVM device is not reachable, tests
+are cleanly skipped, ensuring offline test runs and CI runners execute hermetically.
 """
 
 from __future__ import annotations
@@ -12,17 +18,6 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
-# Ensure live socket testing is permitted even when pytest-socket is installed
-try:
-    import pytest_socket
-
-    if hasattr(pytest_socket, "_remove_restrictions"):
-        pytest_socket._remove_restrictions()
-    elif hasattr(pytest_socket, "enable_socket"):
-        pytest_socket.enable_socket()
-except Exception:
-    pass
-
 from pikvm_aio import (
     PiKVMAuthenticationError,
     PiKVMClient,
@@ -31,20 +26,19 @@ from pikvm_aio import (
 )
 from pikvm_aio.tls import parse_host_port
 
-LIVE_TARGET = os.environ.get("PIKVM_LIVE_HOST", "https://admin:admin@192.168.1.108")
-LIVE_USER = os.environ.get("PIKVM_LIVE_USER")
-LIVE_PASS = os.environ.get("PIKVM_LIVE_PASSWORD")
+# Mark all tests in this module as requiring live hardware
+pytestmark = [
+    pytest.mark.live,
+]
+
+LIVE_ENABLE_ENV = "PIKVM_ENABLE_LIVE_TESTS"
+LIVE_HOST_ENV = "PIKVM_LIVE_HOST"
+LIVE_USER_ENV = "PIKVM_LIVE_USER"
+LIVE_PASSWORD_ENV = "PIKVM_LIVE_PASSWORD"
 
 
 def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
     """Quick socket check to verify TCP connectivity to live device."""
-    try:
-        import pytest_socket
-
-        if hasattr(pytest_socket, "_remove_restrictions"):
-            pytest_socket._remove_restrictions()
-    except Exception:
-        pass
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
         sock.close()
@@ -53,28 +47,42 @@ def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-@pytest.fixture(autouse=True)
-def socket_enabled() -> None:
-    """Fixture to ensure sockets are unblocked for live tests."""
-    try:
-        import pytest_socket
-
-        if hasattr(pytest_socket, "_remove_restrictions"):
-            pytest_socket._remove_restrictions()
-        elif hasattr(pytest_socket, "enable_socket"):
-            pytest_socket.enable_socket()
-    except Exception:
-        pass
+@pytest.fixture(autouse=True, scope="module")
+def require_live_environment() -> None:
+    """Guard ensuring live tests are only executed when explicitly enabled via environment."""
+    if os.environ.get(LIVE_ENABLE_ENV) != "1":
+        pytest.skip(
+            f"Live tests disabled by default. Set {LIVE_ENABLE_ENV}=1 to enable.",
+        )
+    target = os.environ.get(LIVE_HOST_ENV, "").strip()
+    if not target:
+        pytest.skip(
+            f"{LIVE_HOST_ENV} environment variable is required to run live tests.",
+        )
 
 
 @pytest.fixture(scope="module")
 def live_device() -> dict[str, str]:
     """Verify live PiKVM device is online and yield connection parameters."""
-    target = LIVE_TARGET.strip()
+    if os.environ.get(LIVE_ENABLE_ENV) != "1":
+        pytest.skip(
+            f"Live tests disabled by default. Set {LIVE_ENABLE_ENV}=1 to enable.",
+        )
+
+    target = os.environ.get(LIVE_HOST_ENV, "").strip()
+    if not target:
+        pytest.skip(
+            f"{LIVE_HOST_ENV} environment variable is required to run live tests.",
+        )
+
     parsed = urlparse(target if "://" in target else f"https://{target}")
 
-    user = LIVE_USER or (unquote(parsed.username) if parsed.username else "admin")
-    password = LIVE_PASS or (unquote(parsed.password) if parsed.password else "admin")
+    user = os.environ.get(LIVE_USER_ENV) or (
+        unquote(parsed.username) if parsed.username else "admin"
+    )
+    password = os.environ.get(LIVE_PASSWORD_ENV) or (
+        unquote(parsed.password) if parsed.password else "admin"
+    )
 
     hostname, port = parse_host_port(target)
 
@@ -90,6 +98,7 @@ def live_device() -> dict[str, str]:
     }
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_fetch_remote_cert(live_device: dict[str, str]) -> None:
     """Validate remote TLS handshake and peer certificate extraction on live PiKVM."""
@@ -104,6 +113,7 @@ async def test_live_fetch_remote_cert(live_device: dict[str, str]) -> None:
     assert len(cert_pem) > 500
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_auth_and_get_info(live_device: dict[str, str]) -> None:
     """Validate authentication and complete model hydration from live PiKVM."""
@@ -153,6 +163,7 @@ async def test_live_auth_and_get_info(live_device: dict[str, str]) -> None:
         assert raw["hw"]["performance"]["fan"]["speed"] == info.fan_speed
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_get_msd(live_device: dict[str, str]) -> None:
     """Validate Mass Storage Device status and partition space from live PiKVM."""
@@ -182,6 +193,7 @@ async def test_live_get_msd(live_device: dict[str, str]) -> None:
         assert isinstance(msd.storage.images, dict)
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_raw_endpoints_and_diagnostics(live_device: dict[str, str]) -> None:
     """Validate raw diagnostics across all KVMD endpoints on live device."""
@@ -214,6 +226,7 @@ async def test_live_raw_endpoints_and_diagnostics(live_device: dict[str, str]) -
         assert set(diag.keys()) == {"info", "msd", "atx", "gpio", "hid", "streamer"}
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_embedded_credentials_url(live_device: dict[str, str]) -> None:
     """Validate URL parsing with embedded user:pass@host on live device."""
@@ -234,6 +247,7 @@ async def test_live_embedded_credentials_url(live_device: dict[str, str]) -> Non
         assert info.serial != ""
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_auth_failure(live_device: dict[str, str]) -> None:
     """Validate that invalid credentials on live PiKVM raise PiKVMAuthenticationError."""

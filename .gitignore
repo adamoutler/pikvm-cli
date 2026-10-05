@@ -27,3 +27,11 @@ htmlcov/
 .DS_Store
 *.swp
 *~
+
+# Agent and temporary audit scratch
+.agents/
+ORIGINAL_REQUEST.md
+PROJECT.md
+scripts/
+
+

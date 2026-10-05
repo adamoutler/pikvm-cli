@@ -20,7 +20,9 @@ from .exceptions import (
     PiKVMAuthenticationError,
     PiKVMConnectionError,
     PiKVMDeviceError,
+    PiKVMSafetyError,
     PiKVMTimeoutError,
+    PiKVMValidationError,
 )
 from .models import (
     HidDeviceState,
@@ -31,17 +33,24 @@ from .models import (
     MsdUploadProgress,
     PiKVMDeviceInfo,
 )
+from .security import SensitiveDataFilter
 from .tls import create_ssl_context
 from .validators import (
     sanitize_hid_text,
+    validate_gpio_channel,
+    validate_gpio_delay,
     validate_hid_key,
     validate_hid_shortcut,
     validate_iso_filename,
     validate_local_iso_file,
+    validate_mouse_button,
+    validate_mouse_coords,
+    validate_mouse_delay,
     validate_ocr_box,
 )
 
 _LOGGER = logging.getLogger(__name__)
+_LOGGER.addFilter(SensitiveDataFilter())
 
 
 def format_url(url: str) -> str:
@@ -68,7 +77,7 @@ class PiKVMClient:
         session: aiohttp.ClientSession | None = None,
         verify_ssl: bool = True,
         ssl_cert: str | bytes | None = None,
-        check_hostname: bool = True,
+        check_hostname: bool | None = None,
         timeout: float = 10.0,
         ssl_context: Any | None = None,
     ) -> None:
@@ -116,7 +125,12 @@ class PiKVMClient:
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.ssl_cert = ssl_cert
-        self.check_hostname = check_hostname
+        if check_hostname is not None:
+            self.check_hostname = check_hostname
+        elif ssl_cert is not None:
+            self.check_hostname = False
+        else:
+            self.check_hostname = True
 
         self._session = session
         self._owns_session = session is None
@@ -296,11 +310,18 @@ class PiKVMClient:
     # ATX Power Operations
     # -------------------------------------------------------------------------
 
-    async def power_action(self, action: str) -> bool:
+    async def power_action(self, action: str, force: bool = False) -> bool:
         """Send an ATX power command or button click.
 
         Supports button clicks ('click', 'long', 'reset', 'power', 'power_long') and
         power states ('on', 'off', 'off_hard', 'reset_hard').
+
+        High-consequence actions ('off_hard', 'reset_hard') require force=True confirmation.
+
+        Raises:
+            PiKVMValidationError: If action name is invalid.
+            PiKVMSafetyError: If high-consequence action is attempted without force=True.
+
         """
         valid_actions = {
             "click",
@@ -314,7 +335,15 @@ class PiKVMClient:
             "reset_hard",
         }
         if action not in valid_actions:
-            raise ValueError(f"Invalid ATX power action '{action}'. Must be one of {valid_actions}")
+            raise PiKVMValidationError(
+                f"Invalid ATX power action '{action}'. Must be one of {valid_actions}"
+            )
+
+        if action in ("off_hard", "reset_hard") and not force:
+            raise PiKVMSafetyError(
+                f"High-consequence ATX power action '{action}' requires "
+                "explicit force=True confirmation."
+            )
 
         if action in ("click", "power"):
             result = await self._request("POST", "/api/atx/click", params={"button": "power"})
@@ -346,6 +375,16 @@ class PiKVMClient:
         resolved_path = validate_local_iso_file(file_path)
         file_size = resolved_path.stat().st_size
         target_name = validate_iso_filename(image_name or resolved_path.name)
+
+        # Check if image pre-existed on remote storage to prevent destructive rollback
+        target_preexisted = False
+        if remove_incomplete:
+            try:
+                msd_info = await self.get_msd()
+                target_preexisted = target_name in msd_info.storage.images
+            except Exception as check_err:
+                _LOGGER.debug("Could not verify pre-existing MSD images: %s", check_err)
+                target_preexisted = False
 
         session = await self._get_session()
         params = {
@@ -412,11 +451,17 @@ class PiKVMClient:
                 target_name,
                 err,
             )
-            if remove_incomplete:
+            if remove_incomplete and not target_preexisted:
                 try:
                     await self.remove_msd_image(target_name)
                 except Exception as cleanup_err:
                     _LOGGER.debug("Compensating rollback failed: %s", cleanup_err)
+            elif target_preexisted:
+                _LOGGER.info(
+                    "Image %s pre-existed on remote storage; skipping compensating "
+                    "removal to prevent data loss.",
+                    target_name,
+                )
             raise
 
     async def download_msd_remote(
@@ -493,8 +538,20 @@ class PiKVMClient:
         )
         return bool(res is not None)
 
-    async def reset_msd(self) -> bool:
-        """Reset MSD to factory default configuration. POST /api/msd/reset."""
+    async def reset_msd(self, force: bool = False) -> bool:
+        """Reset MSD to factory default configuration. POST /api/msd/reset.
+
+        High-consequence action requiring explicit confirmation.
+
+        Raises:
+            PiKVMSafetyError: If attempted without force=True.
+
+        """
+        if not force:
+            raise PiKVMSafetyError(
+                "Resetting MSD to factory configuration is high-consequence and "
+                "requires explicit force=True confirmation."
+            )
         res = await self._request("POST", "/api/msd/reset")
         return bool(res is not None)
 
@@ -604,7 +661,8 @@ class PiKVMClient:
         state: bool | None = None,
     ) -> bool:
         """Send mouse button event. POST /api/hid/events/send_mouse_button."""
-        params: dict[str, Any] = {"button": button}
+        clean_button = validate_mouse_button(button)
+        params: dict[str, Any] = {"button": clean_button}
         if state is not None:
             params["state"] = "1" if state else "0"
         res = await self._request("POST", "/api/hid/events/send_mouse_button", params=params)
@@ -612,7 +670,8 @@ class PiKVMClient:
 
     async def move_mouse(self, to_x: int, to_y: int) -> bool:
         """Move cursor to absolute coordinates. POST /api/hid/events/send_mouse_move."""
-        params = {"to_x": str(to_x), "to_y": str(to_y)}
+        valid_x, valid_y = validate_mouse_coords(to_x, to_y)
+        params = {"to_x": str(valid_x), "to_y": str(valid_y)}
         res = await self._request("POST", "/api/hid/events/send_mouse_move", params=params)
         return bool(res is not None)
 
@@ -625,15 +684,23 @@ class PiKVMClient:
         double_click: bool = False,
     ) -> bool:
         """Tap mouse button with optional coordinate target and double-click support."""
-        if to_x is not None and to_y is not None:
+        clean_button = validate_mouse_button(button)
+        clean_delay = validate_mouse_delay(delay)
+
+        if to_x is not None or to_y is not None:
+            if to_x is None or to_y is None:
+                raise PiKVMValidationError(
+                    "Both to_x and to_y must be provided for mouse click, "
+                    f"got to_x={to_x}, to_y={to_y}"
+                )
             await self.move_mouse(to_x=to_x, to_y=to_y)
 
         clicks = 2 if double_click else 1
         for i in range(clicks):
-            await self.send_mouse_button(button=button, state=True)
-            if delay > 0:
-                await asyncio.sleep(delay)
-            await self.send_mouse_button(button=button, state=False)
+            await self.send_mouse_button(button=clean_button, state=True)
+            if clean_delay > 0:
+                await asyncio.sleep(clean_delay)
+            await self.send_mouse_button(button=clean_button, state=False)
             if double_click and i == 0:
                 await asyncio.sleep(0.08)
         return True
@@ -642,65 +709,113 @@ class PiKVMClient:
         self,
         macro: HidMacro | Sequence[dict[str, Any]],
         abort_on_error: bool = True,
+        max_steps: int = 1000,
+        timeout: float | None = 60.0,
+        allow_hardware_control: bool = False,
     ) -> list[bool]:
-        """Execute a recorded PiKVM recorder script JSON sequence."""
+        """Execute a recorded PiKVM recorder script JSON sequence.
+
+        Args:
+            macro: HidMacro object or sequence of macro event step dictionaries.
+            abort_on_error: If True, halts macro execution upon encountering any step failure.
+            max_steps: Maximum allowable step count (default: 1000).
+            timeout: Maximum execution timeout in seconds (default: 60.0s).
+            allow_hardware_control: If True, allows GPIO switching, pulsing, and ATX actions.
+                If False, attempting hardware actions raises PiKVMSafetyError.
+
+        Returns:
+            List of boolean results for each executed step.
+
+        Raises:
+            PiKVMValidationError: If macro exceeds max_steps or has unsupported type.
+            PiKVMSafetyError: If macro attempts hardware actions without authorization.
+            PiKVMTimeoutError: If execution exceeds timeout duration.
+
+        """
         if isinstance(macro, HidMacro):
             compiled = macro
         elif isinstance(macro, (list, tuple)):
             compiled = HidMacro.from_list(list(macro))
         else:
-            raise ValueError(f"Unsupported macro input type: {type(macro)}")
+            raise PiKVMValidationError(f"Unsupported macro input type: {type(macro)}")
 
-        results: list[bool] = []
-        for step in compiled.steps:
+        if len(compiled.steps) > max_steps:
+            raise PiKVMValidationError(
+                f"Macro step count {len(compiled.steps)} exceeds maximum allowed limit "
+                f"of {max_steps} steps."
+            )
+
+        async def _execute_macro() -> list[bool]:
+            results: list[bool] = []
+            for step in compiled.steps:
+                try:
+                    ok = True
+                    etype = step.event_type
+                    ev = step.event
+
+                    if (
+                        etype in ("gpio_switch", "gpio_pulse", "atx_button")
+                        and not allow_hardware_control
+                    ):
+                        raise PiKVMSafetyError(
+                            f"Macro step '{etype}' requires allow_hardware_control=True "
+                            "confirmation."
+                        )
+
+                    if etype == "delay":
+                        delay_sec = step.delay_ms / 1000.0 if step.delay_ms > 0 else 0.05
+                        await asyncio.sleep(delay_sec)
+                    elif etype == "key":
+                        key_val = str(ev.get("key", ""))
+                        st = ev.get("state")
+                        ok = await self.send_key(key_val, state=st)
+                    elif etype in ("print", "text"):
+                        ok = await self.print_text(
+                            text=str(ev.get("text", "")),
+                            keymap=ev.get("keymap"),
+                            delay=ev.get("delay"),
+                            slow=bool(ev.get("slow", False)),
+                        )
+                    elif etype == "mouse_button":
+                        btn = str(ev.get("button", "left"))
+                        st = ev.get("state")
+                        ok = await self.send_mouse_button(btn, state=st)
+                    elif etype == "mouse_move":
+                        target_to = ev.get("to", {})
+                        x = int(target_to.get("x", 0))
+                        y = int(target_to.get("y", 0))
+                        ok = await self.move_mouse(x, y)
+                    elif etype == "gpio_switch":
+                        ch = str(ev.get("channel", ""))
+                        to_st = bool(ev.get("state", False))
+                        ok = await self.switch_gpio(ch, to_st)
+                    elif etype == "gpio_pulse":
+                        ch = str(ev.get("channel", ""))
+                        ok = await self.pulse_gpio(ch)
+                    elif etype == "atx_button":
+                        btn = str(ev.get("button", "power"))
+                        ok = await self.power_action(btn, force=True)
+
+                    results.append(ok)
+                    if not ok and abort_on_error:
+                        break
+                except Exception:
+                    results.append(False)
+                    if abort_on_error:
+                        raise
+
+            return results
+
+        if timeout is not None:
             try:
-                ok = True
-                etype = step.event_type
-                ev = step.event
-
-                if etype == "delay":
-                    delay_sec = step.delay_ms / 1000.0 if step.delay_ms > 0 else 0.05
-                    await asyncio.sleep(delay_sec)
-                elif etype == "key":
-                    key_val = str(ev.get("key", ""))
-                    st = ev.get("state")
-                    ok = await self.send_key(key_val, state=st)
-                elif etype in ("print", "text"):
-                    ok = await self.print_text(
-                        text=str(ev.get("text", "")),
-                        keymap=ev.get("keymap"),
-                        delay=ev.get("delay"),
-                        slow=bool(ev.get("slow", False)),
-                    )
-                elif etype == "mouse_button":
-                    btn = str(ev.get("button", "left"))
-                    st = ev.get("state")
-                    ok = await self.send_mouse_button(btn, state=st)
-                elif etype == "mouse_move":
-                    target_to = ev.get("to", {})
-                    x = int(target_to.get("x", 0))
-                    y = int(target_to.get("y", 0))
-                    ok = await self.move_mouse(x, y)
-                elif etype == "gpio_switch":
-                    ch = str(ev.get("channel", ""))
-                    to_st = bool(ev.get("state", False))
-                    ok = await self.switch_gpio(ch, to_st)
-                elif etype == "gpio_pulse":
-                    ch = str(ev.get("channel", ""))
-                    ok = await self.pulse_gpio(ch)
-                elif etype == "atx_button":
-                    btn = str(ev.get("button", "power"))
-                    ok = await self.power_action(btn)
-
-                results.append(ok)
-                if not ok and abort_on_error:
-                    break
-            except Exception:
-                results.append(False)
-                if abort_on_error:
-                    raise
-
-        return results
+                async with asyncio.timeout(timeout):
+                    return await _execute_macro()
+            except TimeoutError as err:
+                raise PiKVMTimeoutError(
+                    f"Macro execution timed out after {timeout} seconds."
+                ) from err
+        else:
+            return await _execute_macro()
 
     # -------------------------------------------------------------------------
     # Screen OCR Operations
@@ -763,8 +878,9 @@ class PiKVMClient:
         wait: bool = False,
     ) -> bool:
         """Switch an output GPIO channel on or off. POST /api/gpio/switch."""
+        clean_channel = validate_gpio_channel(channel)
         params = {
-            "channel": channel,
+            "channel": clean_channel,
             "state": "1" if state else "0",
             "wait": "1" if wait else "0",
         }
@@ -778,12 +894,14 @@ class PiKVMClient:
         wait: bool = False,
     ) -> bool:
         """Trigger a momentary pulse on an output GPIO channel. POST /api/gpio/pulse."""
+        clean_channel = validate_gpio_channel(channel)
         params: dict[str, Any] = {
-            "channel": channel,
+            "channel": clean_channel,
             "wait": "1" if wait else "0",
         }
         if delay is not None:
-            params["delay"] = str(delay)
+            valid_delay = validate_gpio_delay(delay)
+            params["delay"] = str(valid_delay)
         res = await self._request("POST", "/api/gpio/pulse", params=params)
         return bool(res is not None)
 

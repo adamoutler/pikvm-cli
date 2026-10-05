@@ -15,6 +15,7 @@ from pikvm_aio.exceptions import (
     PiKVMConnectionError,
     PiKVMDeviceError,
     PiKVMTimeoutError,
+    PiKVMValidationError,
 )
 
 
@@ -224,7 +225,7 @@ async def test_power_action_success() -> None:
 async def test_power_action_invalid() -> None:
     """Test rejecting invalid power action argument."""
     client = PiKVMClient("pikvm.local", verify_ssl=False)
-    with pytest.raises(ValueError):
+    with pytest.raises(PiKVMValidationError, match="Invalid ATX power action"):
         await client.power_action("destroy")
 
 

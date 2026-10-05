@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import logging
 import ssl
 from urllib.parse import urlparse
 
 from .exceptions import PiKVMCertificateError, PiKVMTimeoutError
+from .security import SensitiveDataFilter
 
 _LOGGER = logging.getLogger(__name__)
+_LOGGER.addFilter(SensitiveDataFilter())
 
 
 def parse_host_port(target: str, default_port: int = 443) -> tuple[str, int]:
@@ -38,7 +43,7 @@ def parse_host_port(target: str, default_port: int = 443) -> tuple[str, int]:
 def create_ssl_context(
     verify_ssl: bool = True,
     ssl_cert: str | bytes | None = None,
-    check_hostname: bool = True,
+    check_hostname: bool | None = None,
 ) -> ssl.SSLContext:
     """Create an SSL context.
 
@@ -51,23 +56,99 @@ def create_ssl_context(
         context.verify_mode = ssl.CERT_NONE
         return context
 
+    effective_check_hostname = check_hostname if check_hostname is not None else (ssl_cert is None)
+
     if ssl_cert is not None:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = check_hostname
+        context.check_hostname = effective_check_hostname
         context.verify_mode = ssl.CERT_REQUIRED
-        cert_data = (ssl_cert if isinstance(ssl_cert, str) else ssl_cert.decode("utf-8")).strip()
         try:
-            context.load_verify_locations(cadata=cert_data)
-        except ssl.SSLError as err:
+            if isinstance(ssl_cert, bytes):
+                if ssl_cert.strip().startswith(b"-----BEGIN"):
+                    cadata: str | bytes = ssl_cert.decode("ascii").strip()
+                else:
+                    cadata = ssl_cert
+            elif isinstance(ssl_cert, str):
+                cadata = ssl_cert.strip()
+            else:
+                raise PiKVMCertificateError(
+                    f"ssl_cert must be str or bytes, got {type(ssl_cert).__name__}"
+                )
+            if not cadata:
+                raise PiKVMCertificateError("ssl_cert cannot be empty")
+            context.load_verify_locations(cadata=cadata)
+        except (ssl.SSLError, UnicodeDecodeError, ValueError) as err:
             raise PiKVMCertificateError(
                 f"Failed to load certificate into SSLContext: {err}"
             ) from err
         return context
 
     context = ssl.create_default_context()
-    context.check_hostname = check_hostname
+    context.check_hostname = effective_check_hostname
     context.verify_mode = ssl.CERT_REQUIRED
     return context
+
+
+def get_cert_fingerprint(
+    cert_pem_or_der: str | bytes,
+    algorithm: str = "sha256",
+) -> str:
+    """Calculate the cryptographic fingerprint of an X.509 certificate.
+
+    Args:
+        cert_pem_or_der: Certificate content in PEM (str or bytes) or raw DER (bytes).
+        algorithm: Hashing algorithm supported by hashlib (default: 'sha256').
+
+    Returns:
+        Colon-delimited uppercase hexadecimal fingerprint string (e.g. 'AA:BB:CC:...').
+
+    Raises:
+        PiKVMCertificateError: If certificate data is empty, malformed, or algorithm is unsupported.
+
+    """
+    if not cert_pem_or_der:
+        raise PiKVMCertificateError("Certificate data cannot be empty")
+
+    try:
+        if isinstance(cert_pem_or_der, str):
+            lines = [
+                line.strip()
+                for line in cert_pem_or_der.splitlines()
+                if line.strip() and not line.strip().startswith("-----")
+            ]
+            if not lines:
+                raise PiKVMCertificateError("PEM certificate contains no body data")
+            der = base64.b64decode("".join(lines), validate=True)
+        elif isinstance(cert_pem_or_der, (bytes, bytearray)):
+            if b"-----BEGIN" in cert_pem_or_der:
+                lines = [
+                    line.strip()
+                    for line in cert_pem_or_der.decode("ascii").splitlines()
+                    if line.strip() and not line.strip().startswith("-----")
+                ]
+                if not lines:
+                    raise PiKVMCertificateError("PEM certificate contains no body data")
+                der = base64.b64decode("".join(lines), validate=True)
+            else:
+                der = bytes(cert_pem_or_der)
+        else:
+            raise PiKVMCertificateError(
+                f"Expected str or bytes for certificate, got {type(cert_pem_or_der).__name__}"
+            )
+    except (binascii.Error, ValueError, UnicodeDecodeError) as err:
+        raise PiKVMCertificateError(f"Failed to parse certificate data: {err}") from err
+
+    if not der:
+        raise PiKVMCertificateError("Certificate DER payload is empty")
+
+    try:
+        digest = hashlib.new(algorithm, der).hexdigest()
+    except (ValueError, TypeError) as err:
+        raise PiKVMCertificateError(
+            f"Unsupported certificate fingerprint algorithm '{algorithm}': {err}"
+        ) from err
+
+    return ":".join(digest[i : i + 2].upper() for i in range(0, len(digest), 2))
 
 
 async def fetch_remote_cert(

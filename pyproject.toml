@@ -56,7 +56,10 @@ packages = ["src/pikvm_aio"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-ra --cov=pikvm_aio --cov-report=term-missing --cov-report=xml"
+addopts = "-ra --cov=pikvm_aio --cov-report=term-missing --cov-report=xml -m 'not live'"
+markers = [
+    "live: Integration tests that interact with live PiKVM hardware (run with -m live)",
+]
 
 [tool.ruff]
 line-length = 100

@@ -226,7 +226,7 @@ async def test_msd_management_helpers() -> None:
             "POST", "/api/msd/set_connected", params={"connected": "1"}
         )
 
-        assert await client.reset_msd() is True
+        assert await client.reset_msd(force=True) is True
         client._request.assert_awaited_with("POST", "/api/msd/reset")
 
         # Mount helper

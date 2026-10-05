@@ -13,7 +13,7 @@ from .client import PiKVMClient
 from .exceptions import PiKVMError
 from .models import HidMacro, MsdUploadProgress
 from .security import scrub_process_argv
-from .tls import fetch_remote_cert
+from .tls import fetch_remote_cert, get_cert_fingerprint
 
 KNOWN_COMMANDS = {
     "info",
@@ -414,20 +414,46 @@ async def async_main(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Support reading password from stdin via '-p -'
+    if args.password == "-":
+        args.password = sys.stdin.readline().rstrip("\r\n")
+
+    # Support reading TOTP token from stdin via '-t -'
+    if args.totp == "-":
+        args.totp = sys.stdin.readline().rstrip("\r\n")
+
+    # Security warning on Linux /proc/<pid>/cmdline exposure when raw password passed via CLI flag
+    if any(arg in ("-p", "--password") or arg.startswith("--password=") for arg in sys.argv):
+        if args.password and args.password != "-":
+            print(
+                "Security Warning: Passing passwords via command-line flags is insecure. "
+                "Credentials can be viewed via /proc/<pid>/cmdline and 'ps aux'. "
+                "Use the PIKVM_PASSWORD environment variable or '-p -' (stdin) instead.",
+                file=sys.stderr,
+            )
+
     cert_content = _load_cert(args.cert)
 
     if args.command == "fetch-cert":
         try:
             pem = await fetch_remote_cert(args.host, timeout=args.timeout)
+            fingerprint = get_cert_fingerprint(pem)
             if args.output:
                 with open(args.output, "w", encoding="utf-8") as f:
                     f.write(pem)
                 if not args.json:
                     print(f"Certificate successfully written to {args.output}")
+                    print(f"SHA256 Fingerprint: {fingerprint}")
             if args.json:
-                print(json.dumps({"host": args.host, "certificate": pem}, indent=2))
+                print(
+                    json.dumps(
+                        {"host": args.host, "certificate": pem, "fingerprint": fingerprint},
+                        indent=2,
+                    )
+                )
             elif not args.output:
                 print(pem)
+                print(f"SHA256 Fingerprint: {fingerprint}")
             return 0
         except PiKVMError as err:
             print(f"Error fetching certificate: {err}", file=sys.stderr)
@@ -779,12 +805,17 @@ async def async_main(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """CLI script entry point."""
-    scrub_process_argv()
-    if argv is None:
-        argv = sys.argv[1:]
-    normalized = normalize_cli_args(argv)
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    normalized = normalize_cli_args(raw_argv)
     parser = build_parser()
     args = parser.parse_args(normalized)
+
+    # Scrub process memory arguments AFTER parse_args has extracted credentials
+    # into the args namespace.
+    scrub_process_argv()
+    if argv is not None:
+        scrub_process_argv(argv)
+
     sys.exit(asyncio.run(async_main(args)))
 
 

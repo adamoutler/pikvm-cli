@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -225,3 +226,143 @@ async def test_cli_fetch_cert_json(capsys: pytest.CaptureFixture, sample_cert_pe
         data = json.loads(captured.out)
         assert data["host"] == "pikvm.local"
         assert "-----BEGIN CERTIFICATE-----" in data["certificate"]
+
+
+def test_cli_load_cert_helper(tmp_path: Path) -> None:
+    """Test _load_cert helper with file, string, and None."""
+    from pikvm_aio.cli import _load_cert
+
+    assert _load_cert(None) is None
+    assert _load_cert("some-raw-cert-pem") == "some-raw-cert-pem"
+
+    cert_file = tmp_path / "cert.pem"
+    cert_file.write_text("cert-from-file", encoding="utf-8")
+    assert _load_cert(str(cert_file)) == "cert-from-file"
+
+
+@pytest.mark.asyncio
+async def test_cli_fetch_cert_output_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture, sample_cert_pem: str
+) -> None:
+    """Test fetch-cert command saving to output file."""
+    out_file = tmp_path / "saved.crt"
+    parser = build_parser()
+    args = parser.parse_args(["-H", "pikvm.local", "fetch-cert", "-o", str(out_file)])
+
+    with patch("pikvm_aio.cli.fetch_remote_cert", new=AsyncMock(return_value=sample_cert_pem)):
+        code = await async_main(args)
+        assert code == 0
+        assert out_file.read_text(encoding="utf-8") == sample_cert_pem
+        captured = capsys.readouterr()
+        assert "Certificate successfully written to" in captured.out
+        assert "SHA256 Fingerprint:" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_cli_fetch_cert_error_handling(capsys: pytest.CaptureFixture) -> None:
+    """Test fetch-cert command when an exception is raised."""
+    from pikvm_aio.exceptions import PiKVMConnectionError
+
+    parser = build_parser()
+    args = parser.parse_args(["-H", "pikvm.local", "fetch-cert"])
+
+    with patch(
+        "pikvm_aio.cli.fetch_remote_cert",
+        new=AsyncMock(side_effect=PiKVMConnectionError("Connection failed")),
+    ):
+        code = await async_main(args)
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "Error fetching certificate: Connection failed" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_cli_collect_output_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    sample_info_payload: dict,
+    sample_msd_payload: dict,
+) -> None:
+    """Test collect command with -o output file."""
+    out_file = tmp_path / "diag.json"
+    parser = build_parser()
+    args = parser.parse_args(["-H", "pikvm.local", "collect", "-o", str(out_file)])
+
+    combined = dict(sample_info_payload["result"])
+    combined["msd"] = sample_msd_payload["result"]
+    mock_dev_info = PiKVMDeviceInfo.from_dict(combined)
+    mock_msd_info = MsdInfo.from_dict(sample_msd_payload["result"])
+    mock_diag = {
+        "info": combined,
+        "msd": sample_msd_payload["result"],
+        "atx": {"enabled": True},
+        "gpio": {},
+        "hid": {},
+        "streamer": {},
+    }
+
+    with (
+        patch("pikvm_aio.client.PiKVMClient.get_info", new=AsyncMock(return_value=mock_dev_info)),
+        patch("pikvm_aio.client.PiKVMClient.get_msd", new=AsyncMock(return_value=mock_msd_info)),
+        patch(
+            "pikvm_aio.client.PiKVMClient.get_all_diagnostics",
+            new=AsyncMock(return_value=mock_diag),
+        ),
+    ):
+        code = await async_main(args)
+        assert code == 0
+        assert out_file.exists()
+        saved = json.loads(out_file.read_text(encoding="utf-8"))
+        assert "Device" in saved
+        assert "Performance" in saved
+        assert "MSD" in saved
+        captured = capsys.readouterr()
+        assert f"Saved diagnostic report to {out_file}" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_cli_iso_download_commands(capsys: pytest.CaptureFixture) -> None:
+    """Test iso download CLI command in text and json mode."""
+    from pikvm_aio.models import MsdRemoteProgress
+
+    parser = build_parser()
+
+    # Text mode
+    args_text = parser.parse_args(
+        [
+            "-H",
+            "pikvm.local",
+            "iso",
+            "download",
+            "http://example.com/test.iso",
+            "--name",
+            "test.iso",
+        ]
+    )
+
+    async def mock_download_text(*args, **kwargs):
+        yield MsdRemoteProgress(
+            status="ok", written_bytes=1024, percent=100.0, raw={"status": "ok"}
+        )
+
+    with patch("pikvm_aio.client.PiKVMClient.download_msd_remote", side_effect=mock_download_text):
+        code = await async_main(args_text)
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "Download finished." in captured.out
+
+    # JSON mode
+    args_json = parser.parse_args(
+        ["-H", "pikvm.local", "--json", "iso", "download", "http://example.com/test.iso"]
+    )
+
+    async def mock_download_json(*args, **kwargs):
+        yield MsdRemoteProgress(
+            status="ok", written_bytes=2048, percent=50.0, raw={"status": "downloading"}
+        )
+
+    with patch("pikvm_aio.client.PiKVMClient.download_msd_remote", side_effect=mock_download_json):
+        code = await async_main(args_json)
+        assert code == 0
+        captured = capsys.readouterr()
+        assert '"status": "downloading"' in captured.out

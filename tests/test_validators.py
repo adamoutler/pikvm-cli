@@ -25,10 +25,13 @@ def test_validate_iso_filename_valid() -> None:
     assert validate_iso_filename("ubuntu-22.04.iso") == "ubuntu-22.04.iso"
     assert validate_iso_filename("disk_image.img") == "disk_image.img"
     assert validate_iso_filename("ArchLinux-x86_64.ISO") == "ArchLinux-x86_64.ISO"
-    assert validate_iso_filename("/path/to/my_image.iso") == "my_image.iso"
 
 
 def test_validate_iso_filename_traversal_and_invalid() -> None:
+    with pytest.raises(PiKVMValidationError, match="Path traversal"):
+        validate_iso_filename("/path/to/my_image.iso")
+    with pytest.raises(PiKVMValidationError, match="Path traversal"):
+        validate_iso_filename(r"C:\path\to\my_image.iso")
     with pytest.raises(PiKVMValidationError, match="Path traversal"):
         validate_iso_filename("../etc/shadow.iso")
     with pytest.raises(PiKVMValidationError, match="Path traversal"):

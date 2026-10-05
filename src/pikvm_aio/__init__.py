@@ -35,7 +35,18 @@ from .models import (
     ServerMeta,
     ThrottlingInfo,
 )
-from .tls import create_ssl_context, fetch_remote_cert, parse_host_port
+from .security import (
+    SensitiveDataFilter,
+    attach_sensitive_data_filter,
+    configure_secure_logging,
+    scrub_process_argv,
+)
+from .tls import (
+    create_ssl_context,
+    fetch_remote_cert,
+    get_cert_fingerprint,
+    parse_host_port,
+)
 
 async_fetch_peer_certificate = fetch_remote_cert
 
@@ -60,8 +71,8 @@ __all__ = [
     "PiKVMCertificateError",
     "PiKVMClient",
     "PiKVMConnectionError",
-    "PiKVMDeviceInfo",
     "PiKVMDeviceError",
+    "PiKVMDeviceInfo",
     "PiKVMError",
     "PiKVMInvalidKeyError",
     "PiKVMInvalidTextError",
@@ -69,12 +80,17 @@ __all__ = [
     "PiKVMTimeoutError",
     "PiKVMValidationError",
     "PlatformInfo",
+    "SensitiveDataFilter",
     "ServerMeta",
     "ThrottlingInfo",
     "__version__",
     "async_fetch_peer_certificate",
+    "attach_sensitive_data_filter",
+    "configure_secure_logging",
     "create_ssl_context",
     "fetch_remote_cert",
     "format_url",
+    "get_cert_fingerprint",
     "parse_host_port",
+    "scrub_process_argv",
 ]

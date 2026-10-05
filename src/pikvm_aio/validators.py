@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import math
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,6 +12,10 @@ from .exceptions import (
     PiKVMInvalidTextError,
     PiKVMValidationError,
 )
+
+ALLOWED_MEDIA_EXTENSIONS: frozenset[str] = frozenset({".iso", ".img", ".bin", ".raw"})
+VALID_MOUSE_BUTTONS: frozenset[str] = frozenset({"left", "right", "middle", "up", "down"})
+GPIO_CHANNEL_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 # MSD: Alphanumeric, dot, underscore, hyphen; 5-128 chars; ends with .iso or .img
 MSD_IMAGE_NAME_REGEX = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,126}\.(iso|img)$", re.IGNORECASE)
@@ -111,55 +115,80 @@ KEY_ALIASES: dict[str, str] = {
 
 
 def validate_iso_filename(name: str) -> str:
-    """Validate and sanitize an MSD ISO or IMG image filename.
+    """Validate that an MSD image filename is a safe, single-level filename.
+
+    Must end with .iso or .img.
 
     Args:
         name: Filename to validate.
 
     Returns:
-        Cleaned, validated filename.
+        The validated filename.
 
     Raises:
-        PiKVMValidationError: If name is invalid or contains traversal characters.
+        PiKVMValidationError: If the name contains path separators, traversal sequences,
+            null bytes, invalid characters, or fails length/extension constraints.
 
     """
     raw = name.strip()
-    if ".." in raw or "\x00" in raw:
-        raise PiKVMValidationError(f"Path traversal characters detected in image name: {name!r}")
-    clean_name = os.path.basename(raw)
-    if not clean_name or len(clean_name) > 128:
+    if "/" in raw or "\\" in raw or ".." in raw or "\x00" in raw:
         raise PiKVMValidationError(
-            f"Image filename length must be between 5 and 128 characters, got {len(clean_name)}"
+            f"Path traversal characters or directory separators detected in image name: {name!r}"
         )
-    if not MSD_IMAGE_NAME_REGEX.match(clean_name):
+
+    if not (5 <= len(raw) <= 128):
         raise PiKVMValidationError(
-            f"Image name {clean_name!r} contains invalid characters or extension. "
+            f"Image filename length must be between 5 and 128 characters, got {len(raw)}"
+        )
+
+    if not MSD_IMAGE_NAME_REGEX.match(raw):
+        raise PiKVMValidationError(
+            f"Image name {raw!r} contains invalid characters or extension. "
             "Must be alphanumeric with . _ - and end in .iso or .img"
         )
-    return clean_name
+
+    return raw
 
 
-def validate_local_iso_file(path: Path | str, max_size_bytes: int = 68_719_476_736) -> Path:
-    """Validate that local ISO source file exists, is regular, non-empty, and readable.
+def validate_local_iso_file(
+    path: Path | str,
+    max_size_bytes: int = 68_719_476_736,
+    allowed_extensions: frozenset[str] = ALLOWED_MEDIA_EXTENSIONS,
+) -> Path:
+    """Validate that local virtual media source file exists and has an allowed extension.
+
+    Must be a regular, non-empty file.
 
     Args:
         path: Path to local file.
         max_size_bytes: Maximum allowed file size (default: 64 GiB).
+        allowed_extensions: Whitelist of allowed extensions (default: .iso, .img, .bin, .raw).
 
     Returns:
         Resolved Path object.
 
     Raises:
-        PiKVMValidationError: If file does not exist, is not a regular file, or is empty.
+        PiKVMValidationError: If file does not exist, is not a regular file, is empty,
+            exceeds max size, or lacks an allowed media extension.
 
     """
-    p = Path(path).resolve()
+    raw_path = Path(path)
+    p = raw_path.resolve()
     if not p.exists():
         raise PiKVMValidationError(f"Source file does not exist: {p}")
     if not p.is_file():
         raise PiKVMValidationError(
             f"Source is not a regular file (directories and special devices disallowed): {p}"
         )
+    if (
+        raw_path.suffix.lower() not in allowed_extensions
+        or p.suffix.lower() not in allowed_extensions
+    ):
+        raise PiKVMValidationError(
+            f"Source file has invalid extension {raw_path.suffix!r}. "
+            f"Must be one of {sorted(allowed_extensions)}"
+        )
+
     file_stat = p.stat()
     if file_stat.st_size == 0:
         raise PiKVMValidationError(f"Source file is empty (0 bytes): {p}")
@@ -309,3 +338,148 @@ def validate_ocr_box(
         )
 
     return coords
+
+
+def validate_mouse_coords(
+    to_x: int,
+    to_y: int,
+    min_x: int = 0,
+    max_x: int = 4096,
+    min_y: int = 0,
+    max_y: int = 4096,
+) -> tuple[int, int]:
+    """Validate absolute mouse cursor coordinates within physical/display bounds.
+
+    Args:
+        to_x: X coordinate.
+        to_y: Y coordinate.
+        min_x: Minimum allowable X coordinate (default: 0).
+        max_x: Maximum allowable X coordinate (default: 4096).
+        min_y: Minimum allowable Y coordinate (default: 0).
+        max_y: Maximum allowable Y coordinate (default: 4096).
+
+    Returns:
+        Tuple of validated (to_x, to_y).
+
+    Raises:
+        PiKVMValidationError: If coordinates are non-integer or out of bounds.
+
+    """
+    if isinstance(to_x, bool) or not isinstance(to_x, int):
+        raise PiKVMValidationError(f"Mouse coordinate to_x must be an integer, got {to_x!r}")
+    if isinstance(to_y, bool) or not isinstance(to_y, int):
+        raise PiKVMValidationError(f"Mouse coordinate to_y must be an integer, got {to_y!r}")
+
+    if not (min_x <= to_x <= max_x):
+        raise PiKVMValidationError(
+            f"Mouse coordinate to_x ({to_x}) is out of safe bounds [{min_x}..{max_x}]."
+        )
+    if not (min_y <= to_y <= max_y):
+        raise PiKVMValidationError(
+            f"Mouse coordinate to_y ({to_y}) is out of safe bounds [{min_y}..{max_y}]."
+        )
+
+    return to_x, to_y
+
+
+def validate_mouse_button(button: str) -> str:
+    """Validate mouse button name against canonical PiKVM buttons.
+
+    Args:
+        button: Button name (e.g. 'left', 'right', 'middle', 'up', 'down').
+
+    Returns:
+        Validated lowercase button name.
+
+    Raises:
+        PiKVMValidationError: If button name is invalid.
+
+    """
+    clean = button.strip().lower()
+    if clean not in VALID_MOUSE_BUTTONS:
+        raise PiKVMValidationError(
+            f"Invalid mouse button {button!r}. Must be one of {sorted(VALID_MOUSE_BUTTONS)}"
+        )
+    return clean
+
+
+def validate_mouse_delay(
+    delay: float,
+    min_delay: float = 0.0,
+    max_delay: float = 10.0,
+) -> float:
+    """Validate mouse click delay duration.
+
+    Args:
+        delay: Sleep delay in seconds.
+        min_delay: Minimum allowed delay (default: 0.0).
+        max_delay: Maximum allowed delay (default: 10.0).
+
+    Returns:
+        Validated delay float.
+
+    Raises:
+        PiKVMValidationError: If delay is non-numeric, non-finite, or out of bounds.
+
+    """
+    if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+        raise PiKVMValidationError(f"Mouse delay must be numeric, got {delay!r}")
+    if math.isnan(delay) or math.isinf(delay):
+        raise PiKVMValidationError(f"Mouse delay must be a finite number, got {delay}")
+    if not (min_delay <= delay <= max_delay):
+        raise PiKVMValidationError(
+            f"Mouse delay {delay}s out of safe bounds [{min_delay}s..{max_delay}s]."
+        )
+    return float(delay)
+
+
+def validate_gpio_channel(channel: str) -> str:
+    """Validate GPIO channel name against safe alphanumeric identifier specification.
+
+    Args:
+        channel: Channel name (e.g. 'power_btn', 'relay1').
+
+    Returns:
+        Cleaned channel name.
+
+    Raises:
+        PiKVMValidationError: If channel name contains illegal characters or has invalid length.
+
+    """
+    clean = channel.strip()
+    if not clean or not GPIO_CHANNEL_REGEX.match(clean):
+        raise PiKVMValidationError(
+            f"Invalid GPIO channel {channel!r}. "
+            "Must be 1-64 alphanumeric characters, underscores, or hyphens."
+        )
+    return clean
+
+
+def validate_gpio_delay(
+    delay: float,
+    min_delay: float = 0.01,
+    max_delay: float = 10.0,
+) -> float:
+    """Validate GPIO pulse delay timing bounds.
+
+    Args:
+        delay: Pulse duration in seconds.
+        min_delay: Minimum pulse duration (default: 0.01s).
+        max_delay: Maximum pulse duration (default: 10.0s).
+
+    Returns:
+        Validated float delay.
+
+    Raises:
+        PiKVMValidationError: If delay is non-numeric, non-finite, or outside safe bounds.
+
+    """
+    if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+        raise PiKVMValidationError(f"GPIO delay must be numeric, got {delay!r}")
+    if math.isnan(delay) or math.isinf(delay):
+        raise PiKVMValidationError(f"GPIO delay must be a finite number, got {delay}")
+    if not (min_delay <= delay <= max_delay):
+        raise PiKVMValidationError(
+            f"GPIO pulse delay {delay}s out of safe range [{min_delay}s .. {max_delay}s]."
+        )
+    return float(delay)
