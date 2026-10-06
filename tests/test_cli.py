@@ -254,6 +254,14 @@ def test_cli_user_reported_invocations() -> None:
     assert args.insecure is False
     assert args.command == "info"
 
+    # 6. pikvm-cli 192.168.1.108 --help
+    norm = normalize_cli_args(["192.168.1.108", "--help"])
+    assert norm == ["-H", "192.168.1.108", "--help", "info"]
+
+    # 7. pikvm-cli info 192.168.1.108 --help
+    norm = normalize_cli_args(["info", "192.168.1.108", "--help"])
+    assert norm == ["-H", "192.168.1.108", "info", "--help"]
+
 
 @pytest.mark.asyncio
 async def test_cli_end_to_end_positional_host_and_insecure(

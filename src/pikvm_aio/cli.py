@@ -31,7 +31,7 @@ KNOWN_COMMANDS = {
 
 def normalize_cli_args(argv: list[str]) -> list[str]:
     """Normalize CLI arguments to support positional host and flexible placement."""
-    if not argv or "-h" in argv or "--help" in argv:
+    if not argv:
         return argv
 
     subcommand_value_flags = {
