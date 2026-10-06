@@ -1,11 +1,11 @@
-# PiKVM-CLI
+# PiKVM-Client & CLI
 
 [![CI / CD](https://github.com/adamoutler/pikvm-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/adamoutler/pikvm-cli)
-[![PyPI version](https://img.shields.io/pypi/v/pikvm-cli.svg)](https://pypi.org/project/pikvm-cli/)
+[![PyPI version](https://img.shields.io/pypi/v/pikvm-client.svg)](https://pypi.org/project/pikvm-client/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**PiKVM-CLI** is a fast, versatile, out-of-band Command-Line Interface and automation toolkit for [PiKVM](https://pikvm.org/) devices.
+**PiKVM-Client** is a fast, versatile out-of-band Command-Line Interface (`pikvm-cli`) and asynchronous Python client library for [PiKVM](https://pikvm.org/) devices.
 
 Manage hardware health, stream and mount virtual ISOs, send keystrokes and mouse events, extract text from the screen with OCR, trigger GPIOs, and execute ATX power actions directly from your terminal or shell scripts.
 
@@ -16,13 +16,16 @@ Manage hardware health, stream and mount virtual ISOs, send keystrokes and mouse
 Install via `pip`, `pipx`, or `uv`:
 
 ```bash
-# Recommended for CLI usage
-pip install pikvm-cli
+# Recommended for CLI and Python library usage
+pip install pikvm-client
 
 # Or as an isolated standalone tool
-pipx install pikvm-cli
-# or: uv tool install pikvm-cli
+pipx install pikvm-client
+# or: uv tool install pikvm-client
 ```
+
+This installs both the `pikvm-cli` command and the `pikvm` shortcut command.
+
 
 ---
 
@@ -206,13 +209,14 @@ PiKVM-CLI is engineered for zero-trust and security-sensitive out-of-band enviro
 
 ## Python Developer Library Usage
 
-For developers building custom automation, bots, or integrations (such as Home Assistant), `pikvm-cli` includes a full-featured, asynchronous Python library.
+For developers building custom automation, bots, or integrations (such as Home Assistant), `pikvm-client` includes a full-featured, asynchronous Python library.
 
-Both `import pikvm_cli` and backwards-compatible `import pikvm_aio` are supported:
+`import pikvm_client`, `import pikvm_cli`, and backwards-compatible `import pikvm_aio` are all supported:
 
 ```python
 import asyncio
-from pikvm_cli import PiKVMClient
+from pikvm_client import PiKVMClient
+
 
 
 async def main():

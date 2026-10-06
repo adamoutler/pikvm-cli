@@ -1,9 +1,10 @@
-# Module Manifest: `pikvm-cli`
+# Module Manifest: `pikvm-client`
 
 ## Description
-`pikvm-cli` is a standalone, high-performance, asynchronous Python client library and system administration CLI for interacting with PiKVM devices (v2, v3, v4, Mini, Plus) running the `kvmd` REST API.
+`pikvm-client` is a standalone, high-performance, asynchronous Python client library and system administration CLI (`pikvm-cli` / `pikvm`) for interacting with PiKVM devices (v2, v3, v4, Mini, Plus) running the `kvmd` REST API.
 
-It is specifically engineered to meet and exceed Home Assistant Core architectural standards (ADR-0010, Integration Quality Scale Silver/Gold), featuring zero-disk TLS certificate trust, connection pooling via `aiohttp`, Basic + TOTP 2FA authentication, strongly typed data models, virtual media (ISO/MSD) streaming, HID automation (keys, typing, mouse, macros), screen OCR text recognition, GPIO control, and a unified CLI. It provides dual import support under both `pikvm_cli` and `pikvm_aio` for complete backwards compatibility.
+It is specifically engineered to meet and exceed Home Assistant Core architectural standards (ADR-0010, Integration Quality Scale Silver/Gold), featuring zero-disk TLS certificate trust, connection pooling via `aiohttp`, Basic + TOTP 2FA authentication, strongly typed data models, virtual media (ISO/MSD) streaming, HID automation (keys, typing, mouse, macros), screen OCR text recognition, GPIO control, and a unified CLI. It provides triple import support under `pikvm_client`, `pikvm_cli`, and `pikvm_aio` for complete backwards compatibility.
+
 
 ## Dependencies
 - **Runtime:**

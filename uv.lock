@@ -1294,8 +1294,8 @@ wheels = [
 ]
 
 [[package]]
-name = "pikvm-cli"
-version = "0.1.5"
+name = "pikvm-client"
+version = "0.1.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
