@@ -213,6 +213,66 @@ def test_cli_normalize_args() -> None:
     ]
 
 
+def test_cli_user_reported_invocations() -> None:
+    """Test the exact CLI command patterns reported by user."""
+    from pikvm_aio.cli import normalize_cli_args
+
+    parser = build_parser()
+
+    # 1. pikvm-cli 192.168.1.108 -k
+    norm = normalize_cli_args(["192.168.1.108", "-k"])
+    args = parser.parse_args(norm)
+    assert args.host == "192.168.1.108"
+    assert args.insecure is True
+    assert args.command == "info"
+
+    # 2. pikvm-cli 192.168.1.108 health -k
+    norm = normalize_cli_args(["192.168.1.108", "health", "-k"])
+    args = parser.parse_args(norm)
+    assert args.host == "192.168.1.108"
+    assert args.insecure is True
+    assert args.command == "health"
+
+    # 3. pikvm-cli health 192.168.1.108 -k
+    norm = normalize_cli_args(["health", "192.168.1.108", "-k"])
+    args = parser.parse_args(norm)
+    assert args.host == "192.168.1.108"
+    assert args.insecure is True
+    assert args.command == "health"
+
+    # 4. pikvm-cli info 192.168.1.108 -k
+    norm = normalize_cli_args(["info", "192.168.1.108", "-k"])
+    args = parser.parse_args(norm)
+    assert args.host == "192.168.1.108"
+    assert args.insecure is True
+    assert args.command == "info"
+
+    # 5. pikvm-cli info 192.168.1.108
+    norm = normalize_cli_args(["info", "192.168.1.108"])
+    args = parser.parse_args(norm)
+    assert args.host == "192.168.1.108"
+    assert args.insecure is False
+    assert args.command == "info"
+
+
+@pytest.mark.asyncio
+async def test_cli_end_to_end_positional_host_and_insecure(
+    capsys: pytest.CaptureFixture, sample_info_payload: dict
+) -> None:
+    """Test full async_main execution with normalized positional host and -k."""
+    from pikvm_aio.cli import normalize_cli_args
+
+    mock_device = PiKVMDeviceInfo.from_dict(sample_info_payload["result"])
+    parser = build_parser()
+    args = parser.parse_args(normalize_cli_args(["192.168.1.108", "health", "-k"]))
+
+    with patch("pikvm_aio.client.PiKVMClient.get_info", new=AsyncMock(return_value=mock_device)):
+        code = await async_main(args)
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "CPU Temperature: 48.5 °C" in captured.out
+
+
 @pytest.mark.asyncio
 async def test_cli_fetch_cert_json(capsys: pytest.CaptureFixture, sample_cert_pem: str) -> None:
     """Test fetch-cert command with --json."""
