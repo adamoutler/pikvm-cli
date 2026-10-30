@@ -41,6 +41,7 @@ async def test_get_ocr_text_full_screen() -> None:
     assert call_args[1]["params"]["ocr"] == "1"
     assert call_args[1]["params"]["ocr_langs"] == "eng"
     assert "ocr_left" not in call_args[1]["params"]
+    assert call_args[1]["timeout"].total == client.timeout
 
 
 @pytest.mark.asyncio

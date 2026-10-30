@@ -8,13 +8,38 @@ import binascii
 import hashlib
 import logging
 import ssl
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
-from .exceptions import PiKVMCertificateError, PiKVMTimeoutError
+from .exceptions import PiKVMCertificateError, PiKVMInvalidHostError, PiKVMTimeoutError
 from .security import SensitiveDataFilter
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.addFilter(SensitiveDataFilter())
+
+
+def _split_url_host_port(url: str) -> tuple[ParseResult, str | None, int | None]:
+    """Parse a scheme-qualified URL and validate its host and port.
+
+    Contract:
+      - Pure, synchronous, no I/O; O(len(url)).
+      - Returns ``(parsed, hostname, port)`` where ``hostname`` is the unbracketed host
+        (IPv6 literals without ``[]``) and ``port`` is ``None`` when absent.
+      - Never leaks a bare :class:`ValueError` from :mod:`urllib.parse`; malformed input
+        (non-numeric / out-of-range port, unbalanced brackets, bare unbracketed IPv6)
+        raises :class:`PiKVMInvalidHostError` (a ``ValueError`` subclass).
+    """
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError as err:
+        hostinfo = url.split("://", 1)[-1].split("/", 1)[0].rsplit("@", 1)[-1]
+        if "[" not in hostinfo and hostinfo.count(":") > 1:
+            raise PiKVMInvalidHostError(
+                f"Invalid host {hostinfo!r}: IPv6 addresses must be enclosed in brackets, "
+                f"e.g. '[{hostinfo}]' or '[{hostinfo}]:443'"
+            ) from err
+        raise PiKVMInvalidHostError(f"Invalid host or port in {hostinfo!r}: {err}") from err
+    return parsed, parsed.hostname, port
 
 
 def parse_host_port(target: str, default_port: int = 443) -> tuple[str, int]:
@@ -25,14 +50,20 @@ def parse_host_port(target: str, default_port: int = 443) -> tuple[str, int]:
       - 'pikvm.local:8443'
       - 'https://192.168.1.50:8443/'
       - '[2001:db8::1]:8443'
+
+    IPv6 hostnames are returned unbracketed (suitable for socket APIs).
+
+    Raises:
+        PiKVMInvalidHostError: If the host or port is malformed (also a ``ValueError``).
+
     """
     if "://" not in target:
         target = f"https://{target}"
 
-    parsed = urlparse(target)
-    hostname = parsed.hostname or "localhost"
-    if parsed.port is not None:
-        port = parsed.port
+    parsed, parsed_hostname, parsed_port = _split_url_host_port(target)
+    hostname = parsed_hostname or "localhost"
+    if parsed_port is not None:
+        port = parsed_port
     elif parsed.scheme == "http":
         port = 80
     else:

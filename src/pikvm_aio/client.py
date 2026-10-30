@@ -20,6 +20,7 @@ from .exceptions import (
     PiKVMAuthenticationError,
     PiKVMConnectionError,
     PiKVMDeviceError,
+    PiKVMInvalidTOTPError,
     PiKVMSafetyError,
     PiKVMTimeoutError,
     PiKVMValidationError,
@@ -34,7 +35,7 @@ from .models import (
     PiKVMDeviceInfo,
 )
 from .security import SensitiveDataFilter
-from .tls import create_ssl_context
+from .tls import _split_url_host_port, create_ssl_context
 from .validators import (
     sanitize_hid_text,
     validate_gpio_channel,
@@ -54,14 +55,24 @@ _LOGGER.addFilter(SensitiveDataFilter())
 
 
 def format_url(url: str) -> str:
-    """Format and normalize a host or URL string, stripping embedded credentials."""
+    """Format and normalize a host or URL string, stripping embedded credentials.
+
+    IPv6 literals keep their brackets (``[fe80::1]:8443`` -> ``https://[fe80::1]:8443``).
+
+    Raises:
+        PiKVMInvalidHostError: If the host or port is malformed (also a ``ValueError``),
+            including bare unbracketed IPv6 literals such as ``fe80::1``.
+
+    """
     clean = url.strip()
     if not clean.startswith("http://") and not clean.startswith("https://"):
         clean = f"https://{clean}"
-    parsed = urlparse(clean)
-    netloc = parsed.hostname or "localhost"
-    if parsed.port:
-        netloc = f"{netloc}:{parsed.port}"
+    parsed, hostname, port = _split_url_host_port(clean)
+    netloc = hostname or "localhost"
+    if ":" in netloc:
+        netloc = f"[{netloc}]"
+    if port:
+        netloc = f"{netloc}:{port}"
     return f"{parsed.scheme}://{netloc}".rstrip("/")
 
 
@@ -80,6 +91,8 @@ class PiKVMClient:
         check_hostname: bool | None = None,
         timeout: float = 10.0,
         ssl_context: Any | None = None,
+        *,
+        allow_static_totp: bool = True,
     ) -> None:
         """Initialize the PiKVM client.
 
@@ -87,15 +100,28 @@ class PiKVMClient:
             host: IP address, hostname, or full URL to PiKVM.
             username: HTTP Basic Auth username.
             password: HTTP Basic Auth password.
-            totp_secret: Optional base32 TOTP secret for 2FA.
-            session: Optional existing aiohttp ClientSession.
+            totp_secret: Optional base32 TOTP secret for 2FA (or a static 6/8-digit code
+                when ``allow_static_totp`` is True).
+            session: Optional existing aiohttp ClientSession. ``timeout`` is applied
+                per request, so the injected session's default timeout does not apply.
             verify_ssl: Whether to verify SSL certificates.
             ssl_cert: In-memory PEM certificate string or bytes to trust.
             check_hostname: Whether to verify server hostname matches cert.
-            timeout: Request timeout in seconds.
+            timeout: Request timeout in seconds (total, per request).
             ssl_context: Optional pre-configured ssl.SSLContext.
+            allow_static_totp: Keyword-only. When True (default, CLI-friendly), a numeric
+                6/8-digit ``totp_secret`` is used verbatim as a one-shot code. When False,
+                such values are rejected because one-time codes expire; long-running
+                integrations must supply the base32 secret.
+
+        Raises:
+            PiKVMInvalidHostError: If ``host`` is malformed (also a ``ValueError``).
+            PiKVMInvalidTOTPError: If ``totp_secret`` is not valid base32, or is a static
+                numeric code while ``allow_static_totp`` is False. Subclass of
+                ``PiKVMAuthenticationError``.
 
         """
+        self.base_url = format_url(host)
         raw_host = host.strip()
         parsed_url = urlparse(raw_host if "://" in raw_host else f"https://{raw_host}")
         if parsed_url.username and (username == "admin" or not username):
@@ -103,7 +129,6 @@ class PiKVMClient:
         if parsed_url.password and (password == "admin" or not password):
             password = unquote(parsed_url.password)
 
-        self.base_url = format_url(host)
         self.username = username
         self.password = password
         self.totp_secret = totp_secret.strip().replace(" ", "") if totp_secret else None
@@ -113,6 +138,11 @@ class PiKVMClient:
         if self.totp_secret:
             # Support either a static numeric OTP code (6 or 8 digits) or a base32 seed secret
             if len(self.totp_secret) in (6, 8) and self.totp_secret.isdigit():
+                if not allow_static_totp:
+                    raise PiKVMInvalidTOTPError(
+                        "Static numeric one-time codes are not allowed; "
+                        "supply the base32 TOTP secret instead"
+                    )
                 self._static_totp = self.totp_secret
             else:
                 try:
@@ -120,7 +150,7 @@ class PiKVMClient:
                     # Verify that it generates a token without error
                     self._totp.now()
                 except (binascii.Error, ValueError) as err:
-                    raise PiKVMAuthenticationError(f"Invalid TOTP base32 secret: {err}") from err
+                    raise PiKVMInvalidTOTPError(f"Invalid TOTP base32 secret: {err}") from err
 
         self.timeout = timeout
         self.verify_ssl = verify_ssl
@@ -190,6 +220,9 @@ class PiKVMClient:
                 json=data,
                 headers=headers,
                 ssl=self._ssl_context,
+                # Always pass an explicit per-request timeout: an injected session (e.g. Home
+                # Assistant's shared session) carries its own, much longer, default timeout.
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
             ) as response:
                 if response.status in (401, 403):
                     body = await response.text()
@@ -650,6 +683,7 @@ class PiKVMClient:
             data=sanitized.encode("utf-8"),
             headers=headers,
             ssl=self._ssl_context,
+            timeout=aiohttp.ClientTimeout(total=self.timeout),
         ) as resp:
             resp.raise_for_status()
             payload = await resp.json()
@@ -859,6 +893,7 @@ class PiKVMClient:
             params=params,
             headers=headers,
             ssl=self._ssl_context,
+            timeout=aiohttp.ClientTimeout(total=self.timeout),
         ) as resp:
             resp.raise_for_status()
             return await resp.text()

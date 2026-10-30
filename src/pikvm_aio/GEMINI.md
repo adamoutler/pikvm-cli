@@ -27,6 +27,9 @@
 - **Unified Hierarchy**: All library exceptions inherit from `PiKVMError`. Consumers can safely catch `PiKVMError` to trap all library failures.
 - **Pre-Flight Validation**: Malformed inputs (path traversal sequences `..`, `/`, `\`, out-of-range mouse coordinates, invalid HID keys, excessive GPIO pulse times) raise `PiKVMValidationError` locally *before* any HTTP request is dispatched.
 - **Predictable Network Failures**: Sockets, timeouts, and TLS handshake failures map strictly to `PiKVMConnectionError`, `PiKVMTimeoutError`, or `PiKVMCertificateError`.
+- **Per-Request Timeouts**: `PiKVMClient(timeout=...)` is passed as an explicit `aiohttp.ClientTimeout(total=timeout)` on every request, so an injected shared session (e.g. Home Assistant's, 300 s default) never overrides it. MSD upload/download use their own dedicated timeouts.
+- **Host Validation**: Malformed hosts/ports (`host:abc`, `host:99999`, unbalanced brackets, bare unbracketed IPv6 such as `fe80::1`) raise `PiKVMInvalidHostError` (subclass of both `PiKVMValidationError` and `ValueError`). IPv6 literals keep their brackets in `format_url` (`[fe80::1]:8443` → `https://[fe80::1]:8443`).
+- **TOTP Validation**: Invalid base32 secrets raise `PiKVMInvalidTOTPError` (subclass of `PiKVMAuthenticationError`). Long-running consumers should pass `allow_static_totp=False` (keyword-only) to reject expiring static 6/8-digit codes; the default `True` keeps CLI behaviour unchanged.
 
 ### 3. Security & Isolation Invariants
 - **Hostile Wire Invariant**: Trust nothing from the network; bounds-check all incoming responses and enforce timeout controls on every HTTP call.

@@ -109,6 +109,7 @@ async def test_print_text() -> None:
     assert call_args[1]["data"] == b"echo 'hello'\n"
     assert call_args[1]["params"]["keymap"] == "en-us"
     assert call_args[1]["params"]["slow"] == "1"
+    assert call_args[1]["timeout"].total == client.timeout
 
 
 @pytest.mark.asyncio

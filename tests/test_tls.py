@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pikvm_aio.exceptions import PiKVMCertificateError, PiKVMTimeoutError
+from pikvm_aio.exceptions import (
+    PiKVMCertificateError,
+    PiKVMInvalidHostError,
+    PiKVMTimeoutError,
+)
 from pikvm_aio.tls import create_ssl_context, fetch_remote_cert, parse_host_port
 
 
@@ -19,6 +23,21 @@ def test_parse_host_port() -> None:
     assert parse_host_port("192.168.1.50:8443") == ("192.168.1.50", 8443)
     assert parse_host_port("https://192.168.1.50:8443/api/info") == ("192.168.1.50", 8443)
     assert parse_host_port("[2001:db8::1]:9443") == ("2001:db8::1", 9443)
+
+
+def test_parse_host_port_bracketed_ipv6() -> None:
+    """Bracketed IPv6 is accepted with or without port; hostname is returned unbracketed."""
+    assert parse_host_port("[fe80::1]") == ("fe80::1", 443)
+    assert parse_host_port("[fe80::1]:8443") == ("fe80::1", 8443)
+    assert parse_host_port("https://[2001:db8::1]/api") == ("2001:db8::1", 443)
+    assert parse_host_port("http://[::1]") == ("::1", 80)
+
+
+@pytest.mark.parametrize("target", ["foo:bar", "host:99999", "fe80::1", "[fe80::1"])
+def test_parse_host_port_invalid(target: str) -> None:
+    """Malformed targets raise PiKVMInvalidHostError (a ValueError), never a bare ValueError."""
+    with pytest.raises(PiKVMInvalidHostError):
+        parse_host_port(target)
 
 
 def test_create_ssl_context_insecure() -> None:

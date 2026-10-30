@@ -86,6 +86,9 @@ async def test_cli_health(capsys: pytest.CaptureFixture, sample_info_payload: di
         captured = capsys.readouterr()
         assert "CPU Temperature: 48.5 °C" in captured.out
         assert "Throttled: False" in captured.out
+        # kvmd-fan "speed" is a PWM duty-cycle percentage, not RPM.
+        assert "Fan Speed: 2400%" in captured.out
+        assert "RPM" not in captured.out
 
 
 @pytest.mark.asyncio

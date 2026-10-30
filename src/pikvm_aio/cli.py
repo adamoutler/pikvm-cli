@@ -502,7 +502,7 @@ async def async_main(args: argparse.Namespace) -> int:
                     "Throttling Flags": list(health.throttling.text_flags),
                     "Undervoltage Now": health.throttling.undervoltage_now,
                     "Undervoltage Past": health.throttling.undervoltage_past,
-                    "Fan Speed": f"{info.fan_speed} RPM" if info.fan_speed else "N/A",
+                    "Fan Speed": f"{info.fan_speed}%" if info.fan_speed else "N/A",
                 }
                 _print_formatted(output, args.json)
 
@@ -551,7 +551,7 @@ async def async_main(args: argparse.Namespace) -> int:
                         "Memory Utilization": f"{info.memory_utilization} %"
                         if info.memory_utilization
                         else "N/A",
-                        "Fan Speed": f"{info.fan_speed} RPM" if info.fan_speed else "N/A",
+                        "Fan Speed": f"{info.fan_speed}%" if info.fan_speed else "N/A",
                         "Throttled": info.is_throttled,
                     },
                     "MSD": {
