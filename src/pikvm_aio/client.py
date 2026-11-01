@@ -405,8 +405,11 @@ class PiKVMClient:
 
         Endpoint: POST /api/msd/write?image=<name>&remove_incomplete=1
         """
-        resolved_path = validate_local_iso_file(file_path)
-        file_size = resolved_path.stat().st_size
+        def _validate_and_stat(path: str | Path) -> tuple[Path, int]:
+            resolved = validate_local_iso_file(path)
+            return resolved, resolved.stat().st_size
+
+        resolved_path, file_size = await asyncio.to_thread(_validate_and_stat, file_path)
         target_name = validate_iso_filename(image_name or resolved_path.name)
 
         # Check if image pre-existed on remote storage to prevent destructive rollback
@@ -433,8 +436,9 @@ class PiKVMClient:
         async def _file_chunk_generator() -> AsyncIterator[bytes]:
             sent = 0
             start_time = asyncio.get_running_loop().time()
-            with open(resolved_path, "rb") as f:
-                while chunk := f.read(chunk_size):
+            f = await asyncio.to_thread(resolved_path.open, "rb")
+            try:
+                while chunk := await asyncio.to_thread(f.read, chunk_size):
                     yield chunk
                     sent += len(chunk)
                     if progress_callback:
@@ -453,6 +457,8 @@ class PiKVMClient:
                         )
                         if asyncio.iscoroutine(res):
                             await res
+            finally:
+                await asyncio.to_thread(f.close)
 
         url = f"{self.base_url}/api/msd/write"
         client_timeout = aiohttp.ClientTimeout(
